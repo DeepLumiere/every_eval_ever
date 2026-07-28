@@ -11,7 +11,7 @@ metadata:
   version: 0.1.0
 ---
 
-# Converting a dataset into Every Eval Ever (EEE)
+# Converting evaluation results into Every Eval Ever (EEE)
 
 > **Rule you will keep relearning: all records must validate, but validating ≠
 > correct.** Most real defects (answer leakage, double-counted aggregates,
@@ -42,8 +42,12 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
 1. **Inspect the source first** — you can't map fields you haven't seen. Establish:
    distinct models · benchmarks/subtasks · the metric and its **range** · is there
    per-item data · the **harness** · timestamps · **provenance** (paper + each
-   benchmark's own dataset repo). Filter hygiene junk (`.ipynb_checkpoints`,
-   `*-checkpoint.json`) and segregate hand-curated baselines from harness runs.
+   benchmark's own dataset repo). These facts are usually **spread across many
+   surfaces** and which lives where varies per dataset, so **gather every *relevant*
+   surface before recording a field as unknown** — see `reference/fields.md` §sources
+   for the surface checklist, the coverage-vs-fill split, and which wins when they
+   disagree. Filter hygiene junk (`.ipynb_checkpoints`, `*-checkpoint.json`) and
+   segregate hand-curated baselines from harness runs.
 2. **Decide the shape** — `source_type` (`documentation` if scraped vs
    `evaluation_run` if you ran it); aggregate-only vs +instances; grain (one log
    per model = default, or per model×benchmark when a benchmark has its own

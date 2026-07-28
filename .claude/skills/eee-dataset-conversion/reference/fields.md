@@ -9,6 +9,42 @@ Two collision clusters cause ~80% of mistakes:
 - **"what's its name?" is three fields:** `evaluation_name` (the eval),
   `metric_config.metric_name` (the metric), `source_metadata.source_name` (the venue).
 
+## §sources — sweep every surface before calling a field missing
+One eval is documented across many places, and **which fact lives where varies per
+dataset** — so treat no location as fixed. A field is "unknown" only after you have
+**swept the surfaces below** and it is on none of them; recorded-missing because you
+checked one page is the failure this heads off. Fields most often blanked when the
+answer *did* exist elsewhere: metric **range/definition**, the **harness**
+(`eval_library`), `source_data` provenance (incl. `hf_repo`/`hf_split`), timestamps.
+
+**Surfaces to sweep:** paper (PDF **and** arXiv HTML — the appendix often has the
+metric definition) · GitHub README + `docs/` · the **results** dump/dataset · each
+benchmark's **own** dataset repo · its HF dataset **card** · the HF **model** card ·
+the leaderboard's pages/tabs/API · blog or release announcement.
+
+**Coverage and fill are separate decisions — don't conflate them.**
+- *Coverage:* take in every value relevant to the exact (model, benchmark, metric,
+  run) you're converting, wherever it lives — the operator's pointer is a starting
+  point, not the boundary. But **don't mix in irrelevant data** (a different model
+  variant, another metric, a superseded arXiv version, a run under other settings).
+  **Relevance** — not required-vs-optional, not effort — is the bound: you're done
+  when the relevant surfaces are covered, and optional fields get the same thorough
+  look as required ones.
+- *Fill:* set a field **iff the sources you gathered actually provide it**; else
+  **leave it empty** — emptiness reflects the sources, not how hard you looked. Never
+  guess to fill; never skip a look because a field is "just optional."
+  (Required fields can't simply be omitted — use the defined fallback where one
+  exists, e.g. `eval_library: "unknown"`; if none fits, ask the operator, don't guess.)
+
+A **gated or login-walled** surface is an **operator call**: don't self-authenticate
+or accept a gate — flag what you couldn't reach.
+
+When surfaces disagree, prefer the more primary (raw dump > paper > leaderboard >
+blog) and **log which surface + its date/version** (arXiv vN, dataset revision,
+leaderboard snapshot — none has a typed field, so it goes in the log or
+`additional_details`) per contested value. Verify cheaply: `source_data` must be a
+repo that actually exists, not just a name in a table.
+
 ## §shape — decide before writing code
 1. **Who produced the scores?** you ran it (have raw outputs) → `evaluation_run`;
    you scraped reported numbers → `documentation`. Item-level data is a strong
