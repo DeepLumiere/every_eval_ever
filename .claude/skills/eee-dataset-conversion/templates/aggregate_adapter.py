@@ -35,23 +35,32 @@ class LogBundle:
                                # per item instead (see instance_sidecar._instance)
 
 
-def _result(benchmark, score, ref_url):            # one benchmark -> one result
+def _result(benchmark, score, dataset_url):        # one benchmark -> one result
     return EvaluationResult(
         evaluation_result_id=f"{SRC}.{benchmark}",     # stable join key; instances point here
         evaluation_name=f"{SRC}.{benchmark}",          # namespaced id, NOT a title
         source_data=SourceDataUrl(dataset_name=benchmark, source_type="url",
-                                  url=[ref_url]),        # the DATASET / citation URL
+                                  # DATASET url ONLY -> a paper/leaderboard citation is NOT
+                                  # dataset provenance and has no typed home; put it in
+                                  # additional_details, never here (fields.md "no typed home").
+                                  url=[dataset_url]),
         metric_config=MetricConfig(
+            # Describes an ACCURACY metric (0-1, higher-is-better). CHANGE every field for
+            # your metric -> name/kind/unit/direction/bounds; else you emit valid-but-wrong
+            # metadata (validating != correct; see the metric_config notes in fields.md).
             metric_name="accuracy", metric_kind="accuracy", metric_unit="proportion",
-            lower_is_better=False, score_type=ScoreType.continuous,  # never omit
-            min_score=0.0, max_score=1.0),               # continuous REQUIRES min/max
+            lower_is_better=False, score_type=ScoreType.continuous,  # never omit score_type
+            min_score=0.0, max_score=1.0),               # continuous REQUIRES finite min/max
         score_details=ScoreDetails(score=score))
 
 
 def make_log(model, developer, results, eval_ts, retrieved_ts):   # DEFAULT: 1 log / model
     return EvaluationLog(
         schema_version=SCHEMA_VERSION,
-        evaluation_id=f"{SRC}/{developer}_{model}/{eval_ts}",  # STABLE anchor -> idempotent (NOT now)
+        # STABLE anchor -> idempotent (NOT now). If the source is MUTABLE (re-scraped, a
+        # live leaderboard), fold a source revision/run-id into this key; eval_ts alone
+        # can collide across changed snapshots (fields.md timestamps).
+        evaluation_id=f"{SRC}/{developer}_{model}/{eval_ts}",
         retrieved_timestamp=retrieved_ts,                 # STRING epoch = now (record-creation)
         evaluation_timestamp=eval_ts,                     # when the eval ran
         source_metadata=SourceMetadata(
@@ -67,7 +76,7 @@ def make_log(model, developer, results, eval_ts, retrieved_ts):   # DEFAULT: 1 l
 
 def fetch_rows(args):
     """PLACEHOLDER — replace with your source fetch. Yield one tuple per model:
-    (model, developer, [(benchmark, score, ref_url), ...], eval_ts)."""
+    (model, developer, [(benchmark, score, dataset_url), ...], eval_ts)."""
     raise NotImplementedError("wire up the source fetch")
 
 
