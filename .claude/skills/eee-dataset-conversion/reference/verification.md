@@ -2,7 +2,7 @@
 
 *Scope: the checks to run before opening a PR. One list — copy it into the PR description.*
 
-- [ ] **Validate**: `python -m every_eval_ever validate <out>` → all pass (aggregate + instance; `.json`→aggregate, `.jsonl`→instance).
+- [ ] **Validate**: `python -m every_eval_ever validate <file.json> [<file.jsonl> ...]` (or a fixed-depth glob like `'data/<src>/**/*.json'`) → all pass (`.json`→aggregate, `.jsonl`→instance). Pass **files or a glob, not a directory** — the CLI rejects a bare dir. Run it on the files **at their final `data/<collection>/<dev>/<model>/` path**: this CLI runs the **semantic** checks the library `validate()` skips (path structure, companion pairing, `deployment_type`/`model_availability`), and those need the datastore context — a green in-library validate is necessary but not sufficient.
 - [ ] **Offline unit test**: `pytest tests/test_<name>_adapter.py` — fixture-based, no network; guard optional deps (`pyarrow`/`inspect_ai`) with `pytest.importorskip` so `core` CI skips. Assert any **derived math** (e.g. `standard_error`, aggregate == mean of item scores) against a hand-computed value so it can't silently drift.
 - [ ] **Full suite**: `pytest tests` — no regressions.
 - [ ] **Lint**: `ruff check utils/<name>/ tests/test_<name>_adapter.py` — clean.

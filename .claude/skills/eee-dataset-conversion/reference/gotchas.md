@@ -3,11 +3,23 @@
 *Scope: deeper failure modes and mechanisms. For what each field **means**, see
 `fields.md` / `instance-level.md`; this file is the "why it bit us" layer.*
 
-- **`inf` serialization.** `model_dump_json` serializes `±inf` → `null`,
-  invalidating `continuous` bounds — even though the read path accepts `Infinity`.
-  If you truly need unbounded, serialize yourself with `json.dumps(allow_nan=True)`.
-  Better: use finite bounds (a declared range, `[0,1]`/`[0,100]`, or the **observed**
-  min/max — EEE's dominant convention). There is no unbounded `score_type`.
+- **`inf` bounds — settled: emit `±inf`, don't hand-roll it.** A genuinely unbounded
+  `continuous` metric (PSNR, perplexity, WER) sets `min_score`/`max_score` to
+  `float('-inf')`/`float('inf')`. The library serializes those as the JSON **strings**
+  `"Infinity"`/`"-Infinity"` (a `field_serializer` on the bounds, every_eval_ever#212 —
+  valid RFC-8259 JSON that reads back to a float), so just save through
+  `save_evaluation_log`/`model_dump_json` and it round-trips + validates. Do **not**
+  hand-roll `json.dumps(..., allow_nan=True)`: that writes a bare `Infinity` token,
+  which the strict read path (#212) now **rejects**. `null` ≠ unbounded — `null` is
+  "not provided" and still fails `continuous`. Give a **finite** bound only when a real
+  nominal scale exists (`[0,1]`/`[0,100]`); don't invent one for an open-ended metric.
+- **Model deployment axes (every_eval_ever#212).** `model_info.additional_details`
+  must carry `deployment_type` ∈ `{self_deployed, externally_managed, unknown}` and
+  `model_availability` ∈ `{open_weights, closed_weights, unknown}`. The library
+  auto-fills both to `"unknown"`, so a green *library* `validate` does **not** mean you
+  set them — but the CLI/bot `validate` (semantic checks) **errors** on a missing key
+  or a non-enum value. Set the real value when you know it (a closed API model →
+  `externally_managed`+`closed_weights`); don't ship an unconsidered `"unknown"`.
 - **`score_type` omission — the `validate` false PASS.** `fields.md` says never omit
   it (omission fires the JSON-schema `levels` branch). Nuance: the repo's pydantic
   `validate` **passes** an omitted `score_type`, so a green `validate` does **not**

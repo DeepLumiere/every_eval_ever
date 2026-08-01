@@ -83,8 +83,10 @@ repo that actually exists, not just a name in a table.
   normalized family. There is **no `metric_type`** field.
 - `metric_config.score_type` — `binary|continuous|levels`. Traps: (a) omitting it
   fires the `levels` branch → requires `level_names` **and** `has_unknown_level`;
-  (b) `continuous` **requires** `min_score`+`max_score`; (c) there is **no unbounded
-  type** (see gotchas.md). (The JSON schema enforces (a); pydantic `validate` does
+  (b) `continuous` **requires** `min_score`+`max_score`; (c) an **unbounded** metric
+  is allowed — set `min_score`/`max_score` to `±inf` (the library serializes it as
+  the JSON string `"Infinity"`; `null` means "not provided", not unbounded — see
+  gotchas.md). (The JSON schema enforces (a); pydantic `validate` does
   not — set `score_type` explicitly regardless.)
 - `lower_is_better` — required; the inverse of `higher_is_better`.
 - `score_details` — `score` + optional `uncertainty` (`standard_error`,

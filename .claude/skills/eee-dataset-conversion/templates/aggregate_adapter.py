@@ -50,7 +50,8 @@ def _result(benchmark, score, dataset_url):        # one benchmark -> one result
             # metadata (validating != correct; see the metric_config notes in fields.md).
             metric_name="accuracy", metric_kind="accuracy", metric_unit="proportion",
             lower_is_better=False, score_type=ScoreType.continuous,  # never omit score_type
-            min_score=0.0, max_score=1.0),               # continuous REQUIRES finite min/max
+            min_score=0.0, max_score=1.0),               # continuous REQUIRES min/max (finite here;
+                                                         # use ±inf if unbounded, see gotchas.md)
         score_details=ScoreDetails(score=score))
 
 
@@ -70,7 +71,15 @@ def make_log(model, developer, results, eval_ts, retrieved_ts):   # DEFAULT: 1 l
             additional_details={"source_role": "aggregator"}),   # str values only
         # name the harness if the format reveals it (lm-eval/inspect); else "unknown":
         eval_library=EvalLibrary(name="unknown", version="unknown"),
-        model_info=ModelInfo(name=model, id=f"{developer}/{model}"),  # canonicalize via registry
+        model_info=ModelInfo(
+            name=model, id=f"{developer}/{model}",        # canonicalize via registry
+            # #212 needs these two axes; the lib defaults both to "unknown" (so a green
+            # library validate hides an unset value) but the CLI/bot validate ERRORS on a
+            # missing key or a non-enum value. Set the REAL value for your source:
+            additional_details={
+                "deployment_type": "externally_managed",  # self_deployed|externally_managed|unknown
+                "model_availability": "open_weights",      # open_weights|closed_weights|unknown
+            }),
         evaluation_results=[_result(b, s, u) for (b, s, u) in results])
 
 
@@ -102,4 +111,5 @@ def run(args):
 
 if __name__ == "__main__":            # run:  uv run python -m utils.<name>.adapter
     run(parse_args())
-    # then validate:  python -m every_eval_ever validate <output-dir>
+    # then validate the written FILES (the CLI rejects a bare dir):
+    #   python -m every_eval_ever validate data/<src>/**/*.json  (or scripts/validate.sh data/<src>)

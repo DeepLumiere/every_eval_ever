@@ -63,8 +63,9 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
    `reference/fields.md` (aggregate) and `reference/instance-level.md` (jsonl).
 5. **Canonicalize ids** — model + benchmark ids must resolve in the
    eval-card-registry (else they fragment the data). See `reference/registry.md`.
-6. **Verify** — `python -m every_eval_ever validate <out>`, an offline unit test,
-   ruff, a live smoke run, and a **content** spot-check. See `reference/verification.md`.
+6. **Verify** — `python -m every_eval_ever validate <files>` (files/glob, **not** a
+   dir), an offline unit test, ruff, a live smoke run, and a **content** spot-check.
+   See `reference/verification.md`.
 7. **Ask, then log your decisions.** Two channels, don't confuse them:
    - **Ask the operator (live)** when a choice *sets policy*: **creating a new
      canonical id · dropping a non-trivial share of the data · an ambiguous metric
