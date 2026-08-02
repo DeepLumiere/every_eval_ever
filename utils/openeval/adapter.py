@@ -28,10 +28,14 @@ import math
 import re
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, TextIO
 
+from every_eval_ever.converters.common.publication import (
+    publish_evaluation_logs,
+)
 from every_eval_ever.eval_types import (
     DetailedEvaluationResults,
     EvalLibrary,
@@ -53,10 +57,19 @@ from every_eval_ever.eval_types import (
 )
 from every_eval_ever.helpers import (
     SCHEMA_VERSION,
+    datastore_repo_file_path,
     get_developer,
     get_model_id,
+    require_identity,
     sanitize_filename,
-    save_evaluation_log,
+)
+from every_eval_ever.helpers.io import (
+    SourceConversionResult,
+    SourceRecordExclusion,
+    SourceRecordFailure,
+    datastore_output_dir,
+    default_failure_report_path,
+    save_failure_report,
 )
 from every_eval_ever.instance_level_types import (
     AnswerAttributionItem,
@@ -137,6 +150,14 @@ class PendingInstance:
     references: list[str]
     output: list[str]
     metadata: dict[str, str]
+
+
+@dataclass(frozen=True)
+class OpenEvalAggregationResult:
+    groups: dict[tuple[str, str, str], ModelGroup]
+    total_responses: int
+    failures: list[SourceRecordFailure]
+    exclusions: list[SourceRecordExclusion]
 
 
 def parse_args() -> argparse.Namespace:
@@ -248,13 +269,19 @@ def extract_collection(payload: Any, name: str) -> list[dict[str, Any]]:
 
 def validate_payload(
     payload: dict[str, Any],
-) -> tuple[list[dict[str, Any]], Iterable[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], Iterable[Any]]:
     benches = extract_collection(payload.get('bench'), 'bench')
     response_payload = payload.get('response') or payload.get('responses')
-    if isinstance(response_payload, (list, dict)):
-        responses: Iterable[dict[str, Any]] = extract_collection(
-            response_payload, 'response'
-        )
+    responses: Iterable[Any]
+    if isinstance(response_payload, list):
+        responses = [
+            item['row']
+            if isinstance(item, dict) and isinstance(item.get('row'), dict)
+            else item
+            for item in response_payload
+        ]
+    elif isinstance(response_payload, dict):
+        responses = extract_collection(response_payload, 'response')
     elif response_payload is not None:
         responses = response_payload
     else:
@@ -458,28 +485,90 @@ def benchmark_for_response_id(
 def numeric_score_values(
     scores: Any,
 ) -> list[tuple[str, float, dict[str, Any]]]:
+    result = numeric_score_values_result(scores, 'OpenEval score')
+    result.raise_if_incomplete()
+    return result.records
+
+
+def numeric_score_values_result(
+    scores: Any,
+    source_ref: str,
+) -> SourceConversionResult[tuple[str, float, dict[str, Any]]]:
+    """Parse every metric independently and retain malformed score details."""
+    failures: list[SourceRecordFailure] = []
     if not isinstance(scores, dict):
-        return []
+        return SourceConversionResult(
+            source_name=f'{source_ref} metrics',
+            total_records=1,
+            records=[],
+            failures=[
+                SourceRecordFailure(
+                    source_ref=source_ref,
+                    reason='scores must be an object',
+                    source_record=scores,
+                )
+            ],
+        )
     metrics = scores.get('metric') or []
     values = scores.get('value') or []
     if not isinstance(metrics, list) or not isinstance(values, list):
-        return []
+        return SourceConversionResult(
+            source_name=f'{source_ref} metrics',
+            total_records=1,
+            records=[],
+            failures=[
+                SourceRecordFailure(
+                    source_ref=source_ref,
+                    reason='scores.metric and scores.value must be lists',
+                    source_record=scores,
+                )
+            ],
+        )
 
-    pairs = []
-    for metric, value in zip(metrics, values, strict=False):
-        if not isinstance(metric, dict):
-            continue
-        name = metric.get('name')
-        if name in (None, ''):
-            continue
+    pairs: list[tuple[str, float, dict[str, Any]]] = []
+    total_records = max(len(metrics), len(values))
+    if total_records == 0:
+        failures.append(
+            SourceRecordFailure(
+                source_ref=source_ref,
+                reason='scores contains no metric/value entries',
+                source_record=scores,
+            )
+        )
+        total_records = 1
+    for index in range(max(len(metrics), len(values))):
+        metric_ref = f'{source_ref} metric {index}'
         try:
+            metric = metrics[index]
+            value = values[index]
+            if not isinstance(metric, dict):
+                raise ValueError('metric definition must be an object')
+            name = metric.get('name')
+            if name in (None, ''):
+                raise ValueError('metric name is missing')
             score = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isnan(score) or math.isinf(score):
-            continue
-        pairs.append((str(name), score, metric))
-    return pairs
+            if not math.isfinite(score):
+                raise ValueError(f'score must be finite, got {value!r}')
+            pairs.append((str(name), score, metric))
+        except (IndexError, TypeError, ValueError) as exc:
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=metric_ref,
+                    reason=str(exc),
+                    source_record={
+                        'metric': metrics[index]
+                        if index < len(metrics)
+                        else None,
+                        'value': values[index] if index < len(values) else None,
+                    },
+                )
+            )
+    return SourceConversionResult(
+        source_name=f'{source_ref} metrics',
+        total_records=total_records,
+        records=pairs,
+        failures=failures,
+    )
 
 
 def model_name(response: dict[str, Any]) -> str:
@@ -561,9 +650,17 @@ def make_generation_config(params: dict[str, Any]) -> GenerationConfig | None:
 def normalize_model_info(
     name: str, size: str | None
 ) -> tuple[ModelInfo, str, str]:
-    developer = get_developer(name)
-    model_id = get_model_id(name, developer)
-    model_slug = normalize_slug(model_id.split('/', 1)[-1], name)
+    name = require_identity(name, 'OpenEval model name')
+    developer = require_identity(
+        get_developer(name), 'OpenEval model developer'
+    )
+    model_id = require_identity(
+        get_model_id(name, developer), 'OpenEval model id'
+    )
+    model_slug = require_identity(
+        normalize_slug(model_id.split('/', 1)[-1], name),
+        'OpenEval model path name',
+    )
     details = stringify_details({'raw_model_name': name, 'model_size': size})
     return (
         ModelInfo(
@@ -577,25 +674,45 @@ def normalize_model_info(
     )
 
 
-def aggregate_scores(
+def aggregate_scores_result(
     benches: list[dict[str, Any]],
-    responses: Iterable[dict[str, Any]],
+    responses: Iterable[Any],
     limit_responses: int | None = None,
     allow_unknown_benchmark: bool = False,
     items: list[dict[str, Any]] | None = None,
     include_instances: bool = False,
-) -> dict[tuple[str, str, str], ModelGroup]:
+) -> OpenEvalAggregationResult:
     benchmark_index = build_benchmark_index(benches)
     item_index = build_index(items or [], 'item_id')
     groups: dict[tuple[str, str, str], ModelGroup] = {}
     seen_results: set[tuple[str, str]] = set()
+    failures: list[SourceRecordFailure] = []
+    exclusions: list[SourceRecordExclusion] = []
+    total_responses = 0
 
     try:
         for count, response in enumerate(responses, start=1):
             if limit_responses is not None and count > limit_responses:
                 break
+            total_responses += 1
+            if not isinstance(response, dict):
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=f'OpenEval response row {count}',
+                        reason='response must be an object',
+                        source_record=response,
+                    )
+                )
+                continue
             response_id = str(response.get('response_id') or '')
             if not response_id:
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=f'OpenEval response row {count}',
+                        reason='response_id is missing',
+                        source_record=response,
+                    )
+                )
                 continue
 
             benchmark = benchmark_for_response_id(response_id, benchmark_index)
@@ -603,11 +720,19 @@ def aggregate_scores(
                 benchmark.get('benchmark_name') == 'unknown'
                 and not allow_unknown_benchmark
             ):
-                raise ValueError(
-                    f'Could not match OpenEval response_id {response_id!r} '
-                    'to a benchmark. Pass --allow-unknown-benchmark to keep '
-                    'unmatched rows under the unknown benchmark.'
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=f'OpenEval response {response_id!r}',
+                        reason=(
+                            f'Could not match OpenEval response_id '
+                            f'{response_id!r} to a benchmark. Pass '
+                            '--allow-unknown-benchmark to keep unmatched rows '
+                            'under the unknown benchmark.'
+                        ),
+                        source_record=response,
+                    )
                 )
+                continue
             name = model_name(response)
             size = model_size(response)
             params = generation_parameters(response)
@@ -618,13 +743,25 @@ def aggregate_scores(
             )
 
             sample_id = response_item_id(response_id) or response_id
-            for metric_name, score, metric in numeric_score_values(
-                response.get('scores')
-            ):
+            score_result = numeric_score_values_result(
+                response.get('scores'),
+                f'OpenEval response {response_id!r}',
+            )
+            failures.extend(score_result.failures)
+            for metric_name, score, metric in score_result.records:
                 seen_key = (name, response_id, metric_name)
                 if seen_key in seen_results:
+                    exclusions.append(
+                        SourceRecordExclusion(
+                            source_ref=(
+                                f'OpenEval response {response_id!r} metric '
+                                f'{metric_name!r}'
+                            ),
+                            reason='duplicate model/response/metric score',
+                            source_record=response,
+                        )
+                    )
                     continue
-                seen_results.add(seen_key)
                 accumulator_key = result_key(benchmark, metric_name)
                 accumulator = group.metrics.setdefault(
                     accumulator_key,
@@ -632,34 +769,52 @@ def aggregate_scores(
                         benchmark=benchmark, metric_name=metric_name
                     ),
                 )
-                accumulator.add(score, response_id, metric)
-                if include_instances:
-                    item = item_index.get(sample_id)
-                    append_pending_instance(
-                        group,
-                        PendingInstance(
-                            response_id=response_id,
-                            sample_id=sample_id,
-                            benchmark=benchmark,
-                            metric_name=metric_name,
-                            score=score,
-                            raw_input=input_text(item, response),
-                            references=reference_texts(item),
-                            output=response_texts(response),
-                            metadata=instance_metadata(
-                                response_id,
-                                benchmark,
-                                metric_name,
-                                metric,
-                                item,
-                                response,
+                try:
+                    if include_instances:
+                        item = item_index.get(sample_id)
+                        append_pending_instance(
+                            group,
+                            PendingInstance(
+                                response_id=response_id,
+                                sample_id=sample_id,
+                                benchmark=benchmark,
+                                metric_name=metric_name,
+                                score=score,
+                                raw_input=input_text(item, response),
+                                references=reference_texts(item),
+                                output=response_texts(response),
+                                metadata=instance_metadata(
+                                    response_id,
+                                    benchmark,
+                                    metric_name,
+                                    metric,
+                                    item,
+                                    response,
+                                ),
                             ),
-                        ),
+                        )
+                    accumulator.add(score, response_id, metric)
+                    seen_results.add(seen_key)
+                except Exception as exc:
+                    failures.append(
+                        SourceRecordFailure(
+                            source_ref=(
+                                f'OpenEval response {response_id!r} metric '
+                                f'{metric_name!r}'
+                            ),
+                            reason=str(exc),
+                            source_record=response,
+                        )
                     )
     finally:
         close_instance_files(groups)
 
-    return groups
+    return OpenEvalAggregationResult(
+        groups=groups,
+        total_responses=total_responses,
+        failures=failures,
+        exclusions=exclusions,
+    )
 
 
 def result_key(benchmark: dict[str, Any], metric_name: str) -> str:
@@ -1066,6 +1221,60 @@ def source_metadata(
     )
 
 
+def _make_log_bundle(
+    name: str,
+    size: str,
+    gen_key: str,
+    group: ModelGroup,
+    metadata: SourceMetadata,
+    timestamp: str,
+) -> LogBundle | None:
+    results = [metric for metric in group.metrics.values() if metric.values]
+    if not results:
+        return None
+    model_info, developer, model_slug = normalize_model_info(name, size or None)
+    generation_config = make_generation_config(group.generation_params)
+    if generation_config is not None:
+        details = generation_config.additional_details or {}
+        generation_config.additional_details = {
+            **details,
+            'generation_config_hash': gen_key,
+        }
+    results = [
+        make_evaluation_result(metric, generation_config) for metric in results
+    ]
+
+    sanitized_model_id = model_info.id.replace('/', '_')
+    log = EvaluationLog(
+        schema_version=SCHEMA_VERSION,
+        evaluation_id=(f'openeval/{sanitized_model_id}/{gen_key}/{timestamp}'),
+        retrieved_timestamp=timestamp,
+        source_metadata=metadata,
+        eval_library=EvalLibrary(name='OpenEval', version='unknown'),
+        model_info=model_info,
+        evaluation_results=sorted(
+            results, key=lambda item: item.evaluation_result_id or ''
+        ),
+    )
+    binary_result_ids = {
+        result.evaluation_result_id
+        for result in results
+        if result.evaluation_result_id
+        and (result.metric_config.additional_details or {}).get(
+            'score_values_are_binary'
+        )
+        == 'true'
+    }
+    return LogBundle(
+        log=log,
+        developer=developer,
+        model=model_slug,
+        instance_path=group.instance_path,
+        instance_count=group.instance_count,
+        binary_result_ids=binary_result_ids,
+    )
+
+
 def make_logs(
     payload: dict[str, Any],
     retrieved_timestamp: str | None = None,
@@ -1074,6 +1283,30 @@ def make_logs(
     allow_unknown_benchmark: bool = False,
     include_instances: bool = False,
 ) -> list[LogBundle]:
+    result = make_logs_result(
+        payload,
+        retrieved_timestamp=retrieved_timestamp,
+        revision=revision,
+        limit_responses=limit_responses,
+        allow_unknown_benchmark=allow_unknown_benchmark,
+        include_instances=include_instances,
+    )
+    if result.failures:
+        for bundle in result.records:
+            if bundle.instance_path is not None:
+                bundle.instance_path.unlink(missing_ok=True)
+    result.raise_if_incomplete()
+    return result.records
+
+
+def make_logs_result(
+    payload: dict[str, Any],
+    retrieved_timestamp: str | None = None,
+    revision: str = HF_REVISION,
+    limit_responses: int | None = None,
+    allow_unknown_benchmark: bool = False,
+    include_instances: bool = False,
+) -> SourceConversionResult[LogBundle]:
     benches, responses = validate_payload(payload)
     items = item_rows(payload) if include_instances else []
     if include_instances and not items:
@@ -1082,7 +1315,7 @@ def make_logs(
             'Include an "item" collection in --input-json or use live fetch.'
         )
     timestamp = retrieved_timestamp or str(time.time())
-    groups = aggregate_scores(
+    aggregation = aggregate_scores_result(
         benches,
         responses,
         limit_responses,
@@ -1104,134 +1337,130 @@ def make_logs(
     )
 
     bundles: list[LogBundle] = []
-    for (name, size, gen_key), group in sorted(groups.items()):
-        model_info, developer, model_slug = normalize_model_info(
-            name, size or None
-        )
-        generation_config = make_generation_config(group.generation_params)
-        if generation_config is not None:
-            details = generation_config.additional_details or {}
-            generation_config.additional_details = {
-                **details,
-                'generation_config_hash': gen_key,
-            }
-        results = [
-            make_evaluation_result(metric, generation_config)
-            for metric in group.metrics.values()
-            if metric.values
-        ]
-        if not results:
-            continue
-
-        sanitized_model_id = model_info.id.replace('/', '_')
-        log = EvaluationLog(
-            schema_version=SCHEMA_VERSION,
-            evaluation_id=(
-                f'openeval/{sanitized_model_id}/{gen_key}/{timestamp}'
-            ),
-            retrieved_timestamp=timestamp,
-            source_metadata=metadata,
-            eval_library=EvalLibrary(name='OpenEval', version='unknown'),
-            model_info=model_info,
-            evaluation_results=sorted(
-                results, key=lambda item: item.evaluation_result_id or ''
-            ),
-        )
-        binary_result_ids = {
-            result.evaluation_result_id
-            for result in results
-            if result.evaluation_result_id
-            and (result.metric_config.additional_details or {}).get(
-                'score_values_are_binary'
+    failures = list(aggregation.failures)
+    for (name, size, gen_key), group in sorted(aggregation.groups.items()):
+        try:
+            bundle = _make_log_bundle(
+                name,
+                size,
+                gen_key,
+                group,
+                metadata,
+                timestamp,
             )
-            == 'true'
-        }
-        bundles.append(
-            LogBundle(
-                log=log,
-                developer=developer,
-                model=model_slug,
-                instance_path=group.instance_path,
-                instance_count=group.instance_count,
-                binary_result_ids=binary_result_ids,
-            )
-        )
-
-    return bundles
-
-
-def save_instance_logs(
-    pending_path: Path | None,
-    instance_count: int,
-    aggregate_path: Path,
-    evaluation_id: str,
-    model_id: str,
-    binary_result_ids: set[str] | None = None,
-) -> DetailedEvaluationResults | None:
-    if pending_path is None or instance_count == 0:
-        return None
-
-    sample_path = aggregate_path.with_name(
-        f'{aggregate_path.stem}_samples.jsonl'
-    )
-    file_hash = hashlib.sha256()
-    with (
-        pending_path.open('r', encoding='utf-8') as pending_handle,
-        sample_path.open('w', encoding='utf-8') as handle,
-    ):
-        for line in pending_handle:
-            if not line.strip():
-                continue
-            instance = pending_instance_from_json(line)
-            instance_log = make_instance_log(
-                instance, evaluation_id, model_id, binary_result_ids
-            )
-            output_line = (
-                json.dumps(
-                    instance_log.model_dump(mode='json', exclude_none=True),
-                    ensure_ascii=False,
+            if bundle is not None:
+                bundles.append(bundle)
+        except Exception as exc:
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=f'OpenEval model group {name!r}/{gen_key}',
+                    reason=str(exc),
+                    source_record={
+                        'model_name': name,
+                        'model_size': size,
+                        'generation_parameters': group.generation_params,
+                        'response_ids': sorted(
+                            {
+                                response_id
+                                for metric in group.metrics.values()
+                                for response_id in metric.response_ids
+                            }
+                        ),
+                    },
                 )
-                + '\n'
             )
-            file_hash.update(output_line.encode('utf-8'))
-            handle.write(output_line)
+            if group.instance_path is not None:
+                group.instance_path.unlink(missing_ok=True)
 
-    pending_path.unlink(missing_ok=True)
-
-    return DetailedEvaluationResults(
-        format=Format.jsonl,
-        file_path=sample_path.name,
-        hash_algorithm=HashAlgorithm.sha256,
-        checksum=file_hash.hexdigest(),
-        total_rows=instance_count,
+    if not bundles and not failures:
+        raise ValueError('OpenEval: converted 0 source records')
+    return SourceConversionResult(
+        source_name='OpenEval responses',
+        total_records=aggregation.total_responses,
+        records=bundles,
+        failures=failures,
+        exclusions=aggregation.exclusions,
     )
 
 
 def export_logs(bundles: list[LogBundle], output_dir: Path) -> list[Path]:
-    paths = []
-    for bundle in bundles:
-        path = save_evaluation_log(
-            bundle.log,
-            output_dir,
-            bundle.developer,
-            bundle.model,
-        )
-        detailed = save_instance_logs(
-            bundle.instance_path,
-            bundle.instance_count,
-            path,
-            bundle.log.evaluation_id,
-            bundle.log.model_info.id,
-            bundle.binary_result_ids,
-        )
-        if detailed is not None:
-            bundle.log.detailed_evaluation_results = detailed
-            path.write_text(
-                bundle.log.model_dump_json(indent=2, exclude_none=True),
-                encoding='utf-8',
+    output_dir = Path(output_dir)
+    collection = output_dir.name
+    logs: list[EvaluationLog] = []
+    file_uuids = [str(uuid.uuid4()) for _ in bundles]
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix='eee-openeval-publication-'
+        ) as staging:
+            staging_root = Path(staging)
+            for bundle, file_uuid in zip(bundles, file_uuids, strict=True):
+                log = bundle.log.model_copy(deep=True)
+                if bundle.instance_path is not None and bundle.instance_count:
+                    sample_rows = []
+                    for line in bundle.instance_path.read_text(
+                        encoding='utf-8'
+                    ).splitlines():
+                        if not line.strip():
+                            continue
+                        instance = pending_instance_from_json(line)
+                        sample_rows.append(
+                            make_instance_log(
+                                instance,
+                                log.evaluation_id,
+                                log.model_info.id,
+                                bundle.binary_result_ids,
+                            )
+                        )
+                    if len(sample_rows) != bundle.instance_count:
+                        raise ValueError(
+                            'OpenEval instance spool row count changed before '
+                            'publication'
+                        )
+                    sample_content = ''.join(
+                        json.dumps(
+                            InstanceLevelEvaluationLog.model_validate(
+                                row.model_dump()
+                            ).model_dump(mode='json', exclude_none=True),
+                            ensure_ascii=False,
+                            allow_nan=False,
+                        )
+                        + '\n'
+                        for row in sample_rows
+                    ).encode('utf-8')
+                    sample_name = f'{file_uuid}_samples.jsonl'
+                    staged_dir = datastore_output_dir(
+                        staging_root,
+                        collection,
+                        log.model_info.id,
+                        log.model_info.developer,
+                    )
+                    staged_dir.mkdir(parents=True, exist_ok=True)
+                    (staged_dir / sample_name).write_bytes(sample_content)
+                    log.detailed_evaluation_results = DetailedEvaluationResults(
+                        format=Format.jsonl,
+                        file_path=datastore_repo_file_path(
+                            collection,
+                            log.model_info.id,
+                            log.model_info.developer,
+                            sample_name,
+                        ),
+                        hash_algorithm=HashAlgorithm.sha256,
+                        checksum=hashlib.sha256(sample_content).hexdigest(),
+                        total_rows=len(sample_rows),
+                    )
+                logs.append(log)
+
+            return publish_evaluation_logs(
+                logs,
+                output_dir.parent,
+                file_uuids,
+                staged_output_dir=staging_root,
+                collection_override=collection,
             )
-        paths.append(path)
-    return paths
+    finally:
+        for bundle in bundles:
+            if bundle.instance_path is not None:
+                bundle.instance_path.unlink(missing_ok=True)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1247,16 +1476,23 @@ def run(args: argparse.Namespace) -> int:
             include_instances=args.include_instances,
         )
 
-    bundles = make_logs(
+    result = make_logs_result(
         payload,
         revision=args.revision,
         limit_responses=args.limit_responses,
         allow_unknown_benchmark=args.allow_unknown_benchmark,
         include_instances=args.include_instances,
     )
-    paths = export_logs(bundles, args.output_dir)
+    paths = export_logs(result.records, args.output_dir)
     for path in paths:
         print(path)
+    if result.failures or result.exclusions:
+        report_path = save_failure_report(
+            result,
+            default_failure_report_path(args.output_dir),
+        )
+        print(f'Provenance report: {report_path}')
+    result.raise_if_incomplete()
     return len(paths)
 
 

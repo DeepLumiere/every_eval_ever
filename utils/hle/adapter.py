@@ -63,9 +63,16 @@ from every_eval_ever.eval_types import (
 )
 from every_eval_ever.helpers import (
     SCHEMA_VERSION,
+    EvaluationLogOutput,
+    SourceConversionResult,
+    SourceRecordFailure,
+    default_failure_report_path,
     get_model_id,
+    require_finite_number,
+    require_identity,
     sanitize_filename,
-    save_evaluation_log,
+    save_evaluation_logs,
+    save_failure_report,
 )
 
 SOURCE_NAME = "Scale SEAL Humanity's Last Exam Leaderboard"
@@ -113,27 +120,21 @@ class LeaderboardRow:
 
     @property
     def score(self) -> float:
-        return float(self.raw['score'])
+        return require_finite_number(self.raw['score'], 'HLE score')
 
     @property
     def confidence_half_width(self) -> float | None:
         value = self.raw.get('confidenceInterval_upper')
         if value is None:
             return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+        return require_finite_number(value, 'HLE confidence interval')
 
     @property
     def calibration_error(self) -> float | None:
         value = self.raw.get('calibrationError')
         if value is None:
             return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+        return require_finite_number(value, 'HLE calibration error')
 
     @property
     def created_at(self) -> str | None:
@@ -178,6 +179,14 @@ def parse_args() -> argparse.Namespace:
         help=(
             'After fetching, write the parsed rows to this path so future '
             'runs can replay offline with --input-json.'
+        ),
+    )
+    parser.add_argument(
+        '--failure-report',
+        type=Path,
+        help=(
+            'Write rejected source rows and reasons here. Defaults beside '
+            '--output-dir when any row fails.'
         ),
     )
     return parser.parse_args()
@@ -273,7 +282,7 @@ def load_payload_file(path: Path) -> list[dict[str, Any]]:
 def slugify_model(raw: str) -> str:
     base = re.sub(r'[^\w.\-]+', '-', raw.strip().lower())
     base = re.sub(r'-{2,}', '-', base).strip('-')
-    return sanitize_filename(base) or 'unknown'
+    return require_identity(sanitize_filename(base), 'HLE model path name')
 
 
 def normalize_developer(company: str) -> str:
@@ -401,7 +410,7 @@ def make_calibration_result(
                 input_prompt=JUDGE_PROMPT_DESCRIPTION,
             ),
         ),
-        score_details=ScoreDetails(score=float(row.calibration_error)),
+        score_details=ScoreDetails(score=row.calibration_error),
         generation_config=make_generation_config(),
     )
 
@@ -465,18 +474,54 @@ def make_log(
     return log, developer, model_slug
 
 
-def make_logs(
+def convert_logs(
     rows: list[dict[str, Any]],
     retrieved_timestamp: str | None = None,
-) -> list[tuple[EvaluationLog, str, str]]:
+) -> SourceConversionResult[tuple[EvaluationLog, str, str]]:
     timestamp = retrieved_timestamp or str(time.time())
     bundles = []
     seen_ids: set[str] = set()
-    for raw_row in rows:
+    failures: list[SourceRecordFailure] = []
+    for index, raw_row in enumerate(rows):
         row = LeaderboardRow(raw=raw_row)
-        if not row.model_display or row.raw.get('score') is None:
+        if not row.model_display:
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=f'leaderboard row {index}',
+                    reason='missing model name',
+                    source_record=raw_row,
+                )
+            )
             continue
-        log, developer, slug = make_log(row, timestamp)
+        if row.raw.get('score') is None:
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=f'leaderboard row {index}',
+                    reason='missing score',
+                    source_record=raw_row,
+                )
+            )
+            continue
+        if normalize_developer(row.company) == 'unknown':
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=f'leaderboard row {index}',
+                    reason='missing model developer',
+                    source_record=raw_row,
+                )
+            )
+            continue
+        try:
+            log, developer, slug = make_log(row, timestamp)
+        except (TypeError, ValueError) as exc:
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=f'leaderboard row {index}',
+                    reason=str(exc),
+                    source_record=raw_row,
+                )
+            )
+            continue
         if log.model_info.id in seen_ids:
             raise ValueError(
                 f'Duplicate model id {log.model_info.id!r} in leaderboard '
@@ -485,17 +530,37 @@ def make_logs(
             )
         seen_ids.add(log.model_info.id)
         bundles.append((log, developer, slug))
-    return bundles
+    if not bundles and not failures:
+        raise ValueError('HLE: converted 0 source records')
+    return SourceConversionResult(
+        source_name='HLE',
+        total_records=len(rows),
+        records=bundles,
+        failures=failures,
+    )
+
+
+def make_logs(
+    rows: list[dict[str, Any]],
+    retrieved_timestamp: str | None = None,
+) -> list[tuple[EvaluationLog, str, str]]:
+    result = convert_logs(rows, retrieved_timestamp)
+    result.raise_if_incomplete()
+    return result.records
 
 
 def export(
     bundles: list[tuple[EvaluationLog, str, str]], output_dir: Path
 ) -> list[Path]:
-    paths = []
-    for log, developer, model_slug in bundles:
-        path = save_evaluation_log(log, output_dir, developer, model_slug)
-        paths.append(path)
-    return paths
+    return save_evaluation_logs(
+        EvaluationLogOutput(
+            eval_log=log,
+            base_dir=output_dir,
+            developer=developer,
+            model_name=model_slug,
+        )
+        for log, developer, model_slug in bundles
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -514,14 +579,22 @@ def run(args: argparse.Namespace) -> int:
                         'rows': rows,
                     },
                     indent=2,
+                    allow_nan=False,
                 ),
                 encoding='utf-8',
             )
 
-    bundles = make_logs(rows)
-    paths = export(bundles, args.output_dir)
+    result = convert_logs(rows)
+    paths = export(result.records, args.output_dir)
     for path in paths:
         print(path)
+    if result.failures:
+        report_path = save_failure_report(
+            result,
+            args.failure_report or default_failure_report_path(args.output_dir),
+        )
+        print(f'Failure report: {report_path}')
+        result.raise_if_incomplete()
     return len(paths)
 
 

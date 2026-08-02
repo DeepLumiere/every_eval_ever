@@ -41,11 +41,20 @@ from every_eval_ever.eval_types import (
 )
 from every_eval_ever.helpers import (
     SCHEMA_VERSION,
+    EvaluationLogOutput,
     FetchError,
+    SourceConversionResult,
+    SourceRecordFailure,
+    default_failure_report_path,
     fetch_json,
     get_developer,
+    require_finite_number,
     sanitize_filename,
-    save_evaluation_log,
+    save_evaluation_logs,
+    save_failure_report,
+)
+from every_eval_ever.helpers.io import (
+    require_identity,
 )
 
 DEFAULT_BASE_URL = 'https://api.llm-stats.com'
@@ -241,6 +250,14 @@ def parse_args() -> argparse.Namespace:
         default=Path(DEFAULT_OUTPUT_DIR),
         help=f'Output directory (default: {DEFAULT_OUTPUT_DIR}).',
     )
+    parser.add_argument(
+        '--failure-report',
+        type=Path,
+        help=(
+            'Write rejected source rows and reasons here. Defaults beside '
+            '--output-dir when any row fails.'
+        ),
+    )
     return parser.parse_args()
 
 
@@ -303,9 +320,10 @@ def parse_float(value: Any) -> float | None:
     if isinstance(value, str):
         value = value.strip().removesuffix('%').replace(',', '')
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return require_finite_number(number, 'LLM Stats numeric value')
 
 
 def extract_collection(payload: Any, name: str) -> list[dict[str, Any]]:
@@ -358,20 +376,26 @@ def fetch_payload(api_key: str, base_url: str) -> dict[str, Any]:
         headers=headers,
     )
 
+    source_failures: list[SourceRecordFailure] = []
     try:
         scores = fetch_json(api_url(base_url, '/v1/scores'), headers=headers)
     except FetchError:
-        scores = fetch_benchmark_score_payloads(
+        scores, source_failures = fetch_benchmark_score_payloads(
             extract_collection(benchmarks, 'benchmarks'),
             base_url,
             headers,
         )
-        scores = enrich_scores_with_model_page_sources(scores)
+        enrichment_result = enrich_scores_with_model_page_sources_result(scores)
+        scores = enrichment_result.records
+        source_failures.extend(enrichment_result.failures)
 
     return {
         'models': models,
         'benchmarks': benchmarks,
         'scores': scores,
+        'source_failures': [
+            failure.model_dump() for failure in source_failures
+        ],
     }
 
 
@@ -379,26 +403,46 @@ def fetch_benchmark_score_payloads(
     benchmarks: list[dict[str, Any]],
     base_url: str,
     headers: dict[str, str],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[SourceRecordFailure]]:
     scores: list[dict[str, Any]] = []
+    failures: list[SourceRecordFailure] = []
 
-    for benchmark in benchmarks:
+    for index, benchmark in enumerate(benchmarks):
         benchmark_id = benchmark_source_id(benchmark)
         if benchmark_id == 'unknown':
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=f'benchmark row {index}',
+                    reason='missing benchmark identity',
+                    source_record=benchmark,
+                )
+            )
             continue
 
+        detail_url = api_url(
+            base_url,
+            f'/leaderboard/benchmarks/{benchmark_id}',
+        )
         try:
             detail = fetch_json(
-                api_url(base_url, f'/leaderboard/benchmarks/{benchmark_id}'),
+                detail_url,
                 headers=headers,
             )
         except FetchError as exc:
-            print(f'Skipping benchmark {benchmark_id!r}: {exc}')
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=detail_url,
+                    reason=str(exc),
+                    source_record=benchmark,
+                )
+            )
             continue
 
-        scores.extend(scores_from_benchmark_detail(detail, benchmark))
+        detail_result = scores_from_benchmark_detail_result(detail, benchmark)
+        scores.extend(detail_result.records)
+        failures.extend(detail_result.failures)
 
-    return scores
+    return scores, failures
 
 
 def fetch_text(url: str) -> str:
@@ -414,7 +458,9 @@ def llm_stats_model_page_url(model_id: str) -> str:
     return f'https://llm-stats.com/models/{normalize_slug(model_id)}'
 
 
-def extract_model_page_score_sources(page_html: str) -> dict[str, dict[str, Any]]:
+def extract_model_page_score_sources(
+    page_html: str,
+) -> dict[str, dict[str, Any]]:
     text = html.unescape(page_html).replace('\\"', '"')
     matches = re.finditer(
         r'"benchmark_id":"(?P<benchmark_id>[^"]+)".*?'
@@ -466,8 +512,23 @@ def extract_model_page_score_sources(page_html: str) -> dict[str, dict[str, Any]
 def enrich_scores_with_model_page_sources(
     scores_payload: Any,
 ) -> list[dict[str, Any]]:
+    result = enrich_scores_with_model_page_sources_result(scores_payload)
+    result.raise_if_incomplete()
+    return result.records
+
+
+def enrich_scores_with_model_page_sources_result(
+    scores_payload: Any,
+) -> SourceConversionResult[dict[str, Any]]:
+    """Enrich scores while retaining failed provenance-page lookups."""
     scores = extract_collection(scores_payload, 'scores')
     sources_by_model: dict[str, dict[str, dict[str, Any]]] = {}
+    failures: list[SourceRecordFailure] = []
+    scores_by_model: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for score in scores:
+        model_id = score_model_ref(score)
+        if model_id:
+            scores_by_model[model_id].append(score)
 
     for score in scores:
         model_id = score_model_ref(score)
@@ -477,21 +538,25 @@ def enrich_scores_with_model_page_sources(
         try:
             page_html = fetch_text(llm_stats_model_page_url(model_id))
         except FetchError as exc:
-            print(f'Skipping LLM Stats model page {model_id!r}: {exc}')
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=llm_stats_model_page_url(model_id),
+                    reason=str(exc),
+                    source_record=scores_by_model[model_id],
+                )
+            )
             sources_by_model[model_id] = {}
             continue
 
-        sources_by_model[model_id] = extract_model_page_score_sources(
-            page_html
-        )
+        sources_by_model[model_id] = extract_model_page_score_sources(page_html)
 
     enriched = []
     for score in scores:
         score_copy = dict(score)
         model_id = score_model_ref(score_copy)
         benchmark_id = score_benchmark_ref(score_copy)
-        page_source = (
-            sources_by_model.get(model_id or '', {}).get(benchmark_id or '')
+        page_source = sources_by_model.get(model_id or '', {}).get(
+            benchmark_id or ''
         )
         if page_source:
             for key, value in page_source.items():
@@ -499,13 +564,28 @@ def enrich_scores_with_model_page_sources(
                     score_copy[key] = value
         enriched.append(score_copy)
 
-    return enriched
+    return SourceConversionResult(
+        source_name='LLM Stats model provenance pages',
+        total_records=len(sources_by_model),
+        records=enriched,
+        failures=failures,
+    )
 
 
 def scores_from_benchmark_detail(
     detail: dict[str, Any],
     benchmark_summary: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    result = scores_from_benchmark_detail_result(detail, benchmark_summary)
+    result.raise_if_incomplete()
+    return result.records
+
+
+def scores_from_benchmark_detail_result(
+    detail: dict[str, Any],
+    benchmark_summary: dict[str, Any] | None = None,
+) -> SourceConversionResult[dict[str, Any]]:
+    """Normalize fallback scores while retaining malformed source entries."""
     summary = benchmark_summary or {}
     benchmark = {
         **summary,
@@ -531,16 +611,46 @@ def scores_from_benchmark_detail(
     if not isinstance(entries, list):
         entries = detail.get('models')
     if not isinstance(entries, list):
-        return []
+        return SourceConversionResult(
+            source_name='LLM Stats benchmark detail entries',
+            total_records=1,
+            records=[],
+            failures=[
+                SourceRecordFailure(
+                    source_ref=(
+                        f'benchmark {benchmark_source_id(benchmark)!r}'
+                    ),
+                    reason='benchmark detail has no entries/models list',
+                    source_record=detail,
+                )
+            ],
+        )
 
-    scores = []
-    for entry in entries:
+    scores: list[dict[str, Any]] = []
+    failures: list[SourceRecordFailure] = []
+    benchmark_id = benchmark_source_id(benchmark)
+    for index, entry in enumerate(entries):
+        source_ref = f'benchmark {benchmark_id!r} score row {index}'
         if not isinstance(entry, dict):
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=source_ref,
+                    reason='score entry must be an object',
+                    source_record=entry,
+                )
+            )
             continue
         score_value = first_present(
             entry, ('score', 'benchmark_score', 'normalized_score')
         )
         if score_value in (None, ''):
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=source_ref,
+                    reason='score entry is missing a score value',
+                    source_record=entry,
+                )
+            )
             continue
 
         score = dict(entry)
@@ -556,7 +666,12 @@ def scores_from_benchmark_detail(
             score['source_url'] = entry['self_reported_source']
         scores.append(score)
 
-    return scores
+    return SourceConversionResult(
+        source_name=f'LLM Stats benchmark {benchmark_id!r} score entries',
+        total_records=len(entries),
+        records=scores,
+        failures=failures,
+    )
 
 
 def maybe_save_raw_json(payload: dict[str, Any], path: Path | None) -> None:
@@ -566,7 +681,12 @@ def maybe_save_raw_json(payload: dict[str, Any], path: Path | None) -> None:
     if path.suffix.lower() == '.json':
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True),
+            json.dumps(
+                payload,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            ),
             encoding='utf-8',
         )
         return
@@ -575,11 +695,21 @@ def maybe_save_raw_json(payload: dict[str, Any], path: Path | None) -> None:
     for endpoint in ('models', 'benchmarks', 'scores'):
         endpoint_path = path / f'{endpoint}.json'
         endpoint_path.write_text(
-            json.dumps(payload.get(endpoint), indent=2, sort_keys=True),
+            json.dumps(
+                payload.get(endpoint),
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            ),
             encoding='utf-8',
         )
     (path / 'combined.json').write_text(
-        json.dumps(payload, indent=2, sort_keys=True),
+        json.dumps(
+            payload,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        ),
         encoding='utf-8',
     )
 
@@ -668,12 +798,17 @@ def resolve_model(
     fallback_name = first_present(
         score, ('model_name', 'modelName', 'model_display_name')
     )
+    identity = ref or fallback_name
+    identity = require_identity(
+        str(identity) if identity is not None else None,
+        'LLM Stats model identity',
+    )
 
     fallback = {
-        'id': ref or fallback_name or 'unknown',
-        'model_id': ref or fallback_name or 'unknown',
-        'name': fallback_name or ref or 'unknown',
-        'model_name': fallback_name or ref or 'unknown',
+        'id': identity,
+        'model_id': identity,
+        'name': str(fallback_name or ref),
+        'model_name': str(fallback_name or ref),
     }
     for key in (
         'organization_id',
@@ -719,9 +854,14 @@ def resolve_benchmark(
     fallback_name = first_present(
         score, ('benchmark_name', 'benchmarkName', 'dataset_name')
     )
+    identity = ref or fallback_name
+    identity = require_identity(
+        str(identity) if identity is not None else None,
+        'LLM Stats benchmark identity',
+    )
     return {
-        'id': ref or fallback_name or 'unknown',
-        'name': fallback_name or ref or 'unknown',
+        'id': identity,
+        'name': str(fallback_name or ref),
     }
 
 
@@ -780,12 +920,18 @@ def provider_value(model: dict[str, Any]) -> tuple[str | None, str | None]:
 
 def model_source_id(model: dict[str, Any]) -> str:
     value = first_present(model, MODEL_ID_KEYS)
-    return str(value) if value not in (None, '') else 'unknown'
+    return require_identity(
+        str(value) if value not in (None, '') else None,
+        'LLM Stats model id',
+    )
 
 
 def benchmark_source_id(benchmark: dict[str, Any]) -> str:
     value = first_present(benchmark, BENCHMARK_ID_KEYS)
-    return str(value) if value not in (None, '') else 'unknown'
+    return require_identity(
+        str(value) if value not in (None, '') else None,
+        'LLM Stats benchmark id',
+    )
 
 
 def model_display_name(model: dict[str, Any]) -> str:
@@ -801,14 +947,20 @@ def model_display_name(model: dict[str, Any]) -> str:
             'slug',
         ),
     )
-    return str(value) if value not in (None, '') else 'unknown'
+    return require_identity(
+        str(value) if value not in (None, '') else None,
+        'LLM Stats model name',
+    )
 
 
 def benchmark_display_name(benchmark: dict[str, Any]) -> str:
     value = first_present(
         benchmark, ('name', 'display_name', 'displayName', 'id', 'slug')
     )
-    return str(value) if value not in (None, '') else 'unknown'
+    return require_identity(
+        str(value) if value not in (None, '') else None,
+        'LLM Stats benchmark name',
+    )
 
 
 def split_model_id(value: str) -> tuple[str | None, str | None]:
@@ -827,7 +979,10 @@ def normalize_model_info(model: dict[str, Any]) -> tuple[ModelInfo, str, str]:
     developer_hint = (
         provider_slug or raw_developer_from_id or get_developer(name)
     )
-    developer = normalize_slug(developer_hint, 'unknown')
+    developer = normalize_slug(
+        require_identity(developer_hint, 'LLM Stats model developer'),
+        name,
+    )
 
     raw_slug = first_present(model, ('slug', 'model_slug', 'modelSlug'))
     model_hint = raw_slug or raw_model_from_id or raw_id or name
@@ -950,7 +1105,10 @@ def explicit_score_source_organization(score: dict[str, Any]) -> str | None:
         first_present(score, ('source_organization_inferred_from_url',))
     )
     for key in SOURCE_ORGANIZATION_KEYS:
-        if key in {'source_organization', 'sourceOrganization'} and inferred_from_url:
+        if (
+            key in {'source_organization', 'sourceOrganization'}
+            and inferred_from_url
+        ):
             continue
         value = first_present(score, (key,))
         if value not in (None, ''):
@@ -1209,15 +1367,11 @@ def dedupe_urls(urls: list[str]) -> list[str]:
 
 def llm_stats_model_url(model: dict[str, Any]) -> str | None:
     raw_id = model_source_id(model)
-    if raw_id == 'unknown':
-        return None
     return f'https://llm-stats.com/models/{normalize_slug(raw_id)}'
 
 
 def llm_stats_benchmark_url(benchmark: dict[str, Any]) -> str | None:
     raw_id = benchmark_source_id(benchmark)
-    if raw_id == 'unknown':
-        return None
     return f'https://llm-stats.com/benchmarks/{normalize_slug(raw_id)}'
 
 
@@ -1530,12 +1684,21 @@ def source_metadata(
     )
 
 
-def make_logs(
+def convert_logs(
     payload: dict[str, Any],
     base_url: str = DEFAULT_BASE_URL,
     retrieved_timestamp: str | None = None,
-) -> list[LogBundle]:
+) -> SourceConversionResult[LogBundle]:
     models, benchmarks, scores = validate_payload(payload)
+    source_failures = [
+        SourceRecordFailure(
+            source_ref=str(failure.get('source_ref') or 'unknown source'),
+            reason=str(failure.get('reason') or 'unknown failure'),
+            source_record=failure.get('source_record'),
+        )
+        for failure in payload.get('source_failures', [])
+        if isinstance(failure, dict)
+    ]
     model_index = build_index(models, MODEL_ID_KEYS)
     benchmark_index = build_index(benchmarks, BENCHMARK_ID_KEYS)
     timestamp = retrieved_timestamp or str(time.time())
@@ -1545,18 +1708,33 @@ def make_logs(
     )
     model_infos: dict[tuple[str, str, str], ModelInfo] = {}
 
-    for score in scores:
-        model = resolve_model(score, model_index)
-        benchmark = resolve_benchmark(score, benchmark_index)
-        model_info, developer, model_slug = normalize_model_info(model)
-        relationship = relationship_from_score(score, model)
-        result = make_evaluation_result(score, model, benchmark, base_url)
-        if result is None:
-            continue
+    score_failures: list[SourceRecordFailure] = []
+    for index, score in enumerate(scores):
+        try:
+            model = resolve_model(score, model_index)
+            benchmark = resolve_benchmark(score, benchmark_index)
+            model_info, developer, model_slug = normalize_model_info(model)
+            relationship = relationship_from_score(score, model)
+            result = make_evaluation_result(score, model, benchmark, base_url)
+            if result is None:
+                raise ValueError('missing or invalid score value')
 
-        key = (developer, model_slug, relationship)
-        groups[key].append(result)
-        model_infos[key] = model_info
+            key = (developer, model_slug, relationship)
+            groups[key].append(result)
+            model_infos[key] = model_info
+        except Exception as exc:
+            score_id = first_present(score, ('id', 'score_id', 'scoreId'))
+            score_failures.append(
+                SourceRecordFailure(
+                    source_ref=(
+                        f'score {score_id!r}'
+                        if score_id is not None
+                        else f'score row {index}'
+                    ),
+                    reason=str(exc),
+                    source_record=score,
+                )
+            )
 
     bundles: list[LogBundle] = []
     for (developer, model_slug, relationship), results in sorted(
@@ -1581,21 +1759,43 @@ def make_logs(
             LogBundle(log=log, developer=developer, model=model_slug)
         )
 
-    return bundles
+    failures = [*source_failures, *score_failures]
+    if not bundles and not failures:
+        raise ValueError('LLM Stats: converted 0 source records')
+    if source_failures and score_failures:
+        total_records = len(benchmarks) + len(scores)
+    elif source_failures:
+        total_records = len(benchmarks)
+    else:
+        total_records = len(scores)
+    return SourceConversionResult(
+        source_name='LLM Stats',
+        total_records=total_records,
+        records=bundles,
+        failures=failures,
+    )
+
+
+def make_logs(
+    payload: dict[str, Any],
+    base_url: str = DEFAULT_BASE_URL,
+    retrieved_timestamp: str | None = None,
+) -> list[LogBundle]:
+    result = convert_logs(payload, base_url, retrieved_timestamp)
+    result.raise_if_incomplete()
+    return result.records
 
 
 def export_logs(bundles: list[LogBundle], output_dir: Path) -> list[Path]:
-    paths = []
-    for bundle in bundles:
-        paths.append(
-            save_evaluation_log(
-                bundle.log,
-                output_dir,
-                bundle.developer,
-                bundle.model,
-            )
+    return save_evaluation_logs(
+        EvaluationLogOutput(
+            eval_log=bundle.log,
+            base_dir=output_dir,
+            developer=bundle.developer,
+            model_name=bundle.model,
         )
-    return paths
+        for bundle in bundles
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1618,10 +1818,17 @@ def run(args: argparse.Namespace) -> int:
         payload = fetch_payload(api_key, args.base_url)
 
     maybe_save_raw_json(payload, args.save_raw_json)
-    bundles = make_logs(payload, args.base_url)
-    paths = export_logs(bundles, args.output_dir)
+    result = convert_logs(payload, args.base_url)
+    paths = export_logs(result.records, args.output_dir)
     for path in paths:
         print(path)
+    if result.failures:
+        report_path = save_failure_report(
+            result,
+            args.failure_report or default_failure_report_path(args.output_dir),
+        )
+        print(f'Failure report: {report_path}')
+        result.raise_if_incomplete()
     return len(paths)
 
 
