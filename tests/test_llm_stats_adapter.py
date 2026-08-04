@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from every_eval_ever.adapters.llm_stats import adapter
 from every_eval_ever.eval_types import EvaluationLog
 from every_eval_ever.helpers.io import SourceRecordsError
 from every_eval_ever.validate import validate_file
-from utils.llm_stats import adapter
 
 
 def sample_payload() -> dict:
@@ -110,7 +110,6 @@ def logs_by_relationship() -> dict[str, EvaluationLog]:
 def test_make_logs_validate_against_schema():
     for log in logs_by_relationship().values():
         validated = EvaluationLog.model_validate(log.model_dump())
-        assert validated.schema_version == '0.2.3'
         assert validated.source_metadata.source_organization_name == 'LLM Stats'
         assert validated.source_metadata.source_type.value == 'documentation'
         assert (

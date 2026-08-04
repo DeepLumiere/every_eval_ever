@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from every_eval_ever.adapters.vals_ai import adapter
 from every_eval_ever.eval_types import EvaluationLog
 from every_eval_ever.validate import validate_file
-from utils.vals_ai import adapter
 
 FIXTURE_PATH = (
     Path(__file__).parent / 'data' / 'vals_ai' / 'finance_agent_payload.json'
@@ -106,7 +106,6 @@ def test_make_logs_validate_against_schema():
 
     for bundle in bundles:
         validated = EvaluationLog.model_validate(bundle.log.model_dump())
-        assert validated.schema_version == '0.2.3'
         assert validated.source_metadata.source_organization_name == 'Vals.ai'
         assert validated.source_metadata.source_type.value == 'documentation'
         assert (

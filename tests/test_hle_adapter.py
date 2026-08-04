@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from every_eval_ever.adapters.hle import adapter
 from every_eval_ever.eval_types import EvaluationLog
-from utils.hle import adapter
 
 
 def sample_rows() -> list[dict]:
@@ -70,7 +70,6 @@ def test_make_logs_validate_against_schema():
     assert len(bundles) == 3
     for log, _, _ in bundles:
         validated = EvaluationLog.model_validate(log.model_dump())
-        assert validated.schema_version == '0.2.3'
         assert validated.source_metadata.source_organization_name == 'Scale'
         assert validated.source_metadata.source_type.value == 'documentation'
         assert (

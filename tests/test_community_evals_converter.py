@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import io
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -13,30 +11,13 @@ from rich.console import Console
 from rich.progress import Progress
 
 from every_eval_ever import cli
-
-
-def _load_community_evals_converter():
-    source = (
-        Path(__file__).resolve().parents[1]
-        / 'tools'
-        / 'hf-community-evals'
-        / 'community_evals_converter.py'
-    )
-    spec = importlib.util.spec_from_file_location(
-        'community_evals_converter_under_test',
-        source,
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(f'Unable to load {source}')
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-community_evals_converter = _load_community_evals_converter()
+from every_eval_ever.schema import get_schema_version
+from every_eval_ever.tools import (
+    hf_community_evals as community_evals_converter,
+)
 
 FIXTURE_DIR = Path(__file__).parent / 'data' / 'community_evals_converter'
+CURRENT_SCHEMA_VERSION = get_schema_version()
 
 
 class FakeRepoInfo:
@@ -193,7 +174,7 @@ def _aggregate(
     score: float = 0.641,
 ) -> dict:
     return {
-        'schema_version': '0.2.3',
+        'schema_version': CURRENT_SCHEMA_VERSION,
         'evaluation_id': 'openeval/google_gemma-2b-it/123',
         'evaluation_timestamp': '2024-07-16T00:00:00Z',
         'retrieved_timestamp': '1234567890',
@@ -348,7 +329,7 @@ def _write_collection_rows(
             instance_data = (
                 json.dumps(
                     {
-                        'schema_version': 'instance_level_eval_0.2.3',
+                        'schema_version': CURRENT_SCHEMA_VERSION,
                         'evaluation_id': record['evaluation_id'],
                         'model_id': record['model_info']['id'],
                     }
