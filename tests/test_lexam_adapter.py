@@ -5,6 +5,13 @@ from pathlib import Path
 import pytest
 
 from every_eval_ever.converters.lexam.adapter import (
+    _MODEL_IDENTITIES,
+    MCQ_CONFIG,
+    MCQ_SAMPLES,
+    MCQ_SECTION_TITLE,
+    OPEN_QUESTION_CONFIG,
+    OPEN_QUESTIONS_SAMPLES,
+    OPEN_SECTION_TITLE,
     LEXamAdapter,
     _clean_model_name,
     _extract_section_rows,
@@ -16,6 +23,15 @@ FIXTURE_HTML = (
     Path(__file__).parent / 'data' / 'lexam' / 'leaderboard.html'
 ).read_text(encoding='utf-8')
 
+OPEN_EVAL_NAME = f'lexam.{OPEN_QUESTION_CONFIG}'
+MCQ_EVAL_NAME = f'lexam.{MCQ_CONFIG}'
+
+
+def _gpt5_results() -> dict:
+    logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
+    gpt5 = next(log for log in logs if log.model_info.name == 'GPT-5')
+    return {r.evaluation_name: r for r in gpt5.evaluation_results}
+
 
 def test_clean_model_name_strips_medals() -> None:
     assert _clean_model_name('GPT-5🥇') == 'GPT-5'
@@ -23,20 +39,14 @@ def test_clean_model_name_strips_medals() -> None:
 
 
 def test_extract_section_rows_open_questions() -> None:
-    rows = _extract_section_rows(
-        FIXTURE_HTML,
-        'Leaderboard on LEXam – Open Questions',
-    )
+    rows = _extract_section_rows(FIXTURE_HTML, OPEN_SECTION_TITLE)
     assert len(rows) == 3
     assert rows[0].model_name == 'GPT-5'
     assert rows[0].score == 70.20
 
 
 def test_extract_section_rows_mcq() -> None:
-    rows = _extract_section_rows(
-        FIXTURE_HTML,
-        'Leaderboard on LEXam – Multiple-Choice Questions',
-    )
+    rows = _extract_section_rows(FIXTURE_HTML, MCQ_SECTION_TITLE)
     assert len(rows) == 3
     assert rows[2].model_name == 'Phi-4'
     assert rows[2].score == 25.0
@@ -45,6 +55,24 @@ def test_extract_section_rows_mcq() -> None:
 def test_extract_section_rows_missing_section_raises() -> None:
     with pytest.raises(ValueError, match='Leaderboard section not found'):
         _extract_section_rows(FIXTURE_HTML, 'Missing Section')
+
+
+def test_extract_section_rows_does_not_borrow_next_sections_table() -> None:
+    """A heading whose own table is gone must fail, not read the next table."""
+    open_start = FIXTURE_HTML.index('<table')
+    open_end = FIXTURE_HTML.index('</table>') + len('</table>')
+    without_open_table = FIXTURE_HTML[:open_start] + FIXTURE_HTML[open_end:]
+
+    with pytest.raises(ValueError, match='No table found in section'):
+        _extract_section_rows(without_open_table, OPEN_SECTION_TITLE)
+
+    # The MCQ section is untouched and still parses.
+    mcq_rows = _extract_section_rows(without_open_table, MCQ_SECTION_TITLE)
+    assert [row.model_name for row in mcq_rows] == [
+        'GPT-5',
+        'GPT-4o-mini',
+        'Phi-4',
+    ]
 
 
 def test_fetch_leaderboard_combines_metrics_per_model() -> None:
@@ -58,12 +86,9 @@ def test_fetch_leaderboard_combines_metrics_per_model() -> None:
 
 
 def test_fetch_leaderboard_open_question_score() -> None:
-    logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
-    gpt5 = next(log for log in logs if log.model_info.name == 'GPT-5')
-    results = {r.evaluation_name: r for r in gpt5.evaluation_results}
-
-    assert results['Open Question Judge Score'].score_details.score == 70.20
-    assert results['Multiple-Choice Accuracy'].score_details.score == 62.65
+    results = _gpt5_results()
+    assert results[OPEN_EVAL_NAME].score_details.score == 70.20
+    assert results[MCQ_EVAL_NAME].score_details.score == 62.65
 
 
 def test_fetch_leaderboard_source_metadata_is_documentation() -> None:
@@ -72,61 +97,110 @@ def test_fetch_leaderboard_source_metadata_is_documentation() -> None:
     assert logs[0].source_metadata.source_name == 'LEXam Leaderboard'
 
 
-def test_fetch_leaderboard_uses_hf_dataset_source() -> None:
+def test_evaluator_relationship_is_third_party() -> None:
     logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
-    gpt5 = next(log for log in logs if log.model_info.name == 'GPT-5')
-    open_result = next(
-        r
-        for r in gpt5.evaluation_results
-        if r.evaluation_name == 'Open Question Judge Score'
-    )
-    mcq_result = next(
-        r
-        for r in gpt5.evaluation_results
-        if r.evaluation_name == 'Multiple-Choice Accuracy'
-    )
+    for log in logs:
+        assert log.source_metadata.evaluator_relationship.value == 'third_party'
 
-    assert open_result.source_data.hf_repo == 'LEXam-Benchmark/LEXam'
-    assert open_result.source_data.hf_split == 'test'
-    assert open_result.source_data.samples_number == 2541
-    assert mcq_result.source_data.samples_number == 4696
+
+def test_eval_library_names_the_harness_not_the_benchmark() -> None:
+    logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
+    assert logs[0].eval_library.name == 'lighteval'
+    assert logs[0].eval_library.version == 'unknown'
+    assert logs[0].eval_library.additional_details['benchmark'] == 'lexam'
+
+
+def test_fetch_leaderboard_uses_hf_dataset_source() -> None:
+    open_source = _gpt5_results()[OPEN_EVAL_NAME].source_data
+
+    assert open_source.hf_repo == 'LEXam-Benchmark/LEXam'
+    assert open_source.hf_split == 'test'
+    assert open_source.samples_number == OPEN_QUESTIONS_SAMPLES == 2541
+    assert open_source.additional_details['config'] == 'open_question'
+
+
+def test_mcq_result_is_scoped_to_the_published_four_choice_config() -> None:
+    """The leaderboard column covers mcq_4_choices only, not all 4,696 rows."""
+    mcq_source = _gpt5_results()[MCQ_EVAL_NAME].source_data
+
+    assert MCQ_CONFIG == 'mcq_4_choices'
+    assert mcq_source.samples_number == MCQ_SAMPLES == 1655
+    assert mcq_source.additional_details['config'] == 'mcq_4_choices'
 
 
 def test_fetch_leaderboard_metric_ids() -> None:
-    logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
-    gpt5 = next(log for log in logs if log.model_info.name == 'GPT-5')
-    by_name = {r.evaluation_name: r for r in gpt5.evaluation_results}
-
+    results = _gpt5_results()
     assert (
-        by_name['Open Question Judge Score'].metric_config.metric_id
+        results[OPEN_EVAL_NAME].metric_config.metric_id
         == 'lexam.open_question_judge_score'
     )
-    assert (
-        by_name['Multiple-Choice Accuracy'].metric_config.metric_id
-        == 'lexam.mcq_accuracy'
-    )
+    assert results[MCQ_EVAL_NAME].metric_config.metric_id == 'lexam.mcq_accuracy'
+    assert results[OPEN_EVAL_NAME].metric_config.metric_kind == 'judge_score'
+    assert results[MCQ_EVAL_NAME].metric_config.metric_kind == 'accuracy'
 
 
 def test_fetch_leaderboard_open_metric_has_llm_scoring() -> None:
-    logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
-    gpt5 = next(log for log in logs if log.model_info.name == 'GPT-5')
-    open_result = next(
-        r
-        for r in gpt5.evaluation_results
-        if r.evaluation_name == 'Open Question Judge Score'
-    )
+    llm_scoring = _gpt5_results()[OPEN_EVAL_NAME].metric_config.llm_scoring
 
-    llm_scoring = open_result.metric_config.llm_scoring
     assert llm_scoring is not None
     assert len(llm_scoring.judges) == 3
+    assert {judge.model_info.id for judge in llm_scoring.judges} == {
+        'openai/gpt-4o-2024-11-20',
+        'deepseek-ai/DeepSeek-V3',
+        'Qwen/Qwen3-32B',
+    }
 
 
-def test_fetch_leaderboard_model_developer_inference() -> None:
+def test_judge_scoring_records_the_published_prompt_template() -> None:
+    llm_scoring = _gpt5_results()[OPEN_EVAL_NAME].metric_config.llm_scoring
+
+    assert '{question_fact}' in llm_scoring.input_prompt
+    assert '{ref_answer}' in llm_scoring.input_prompt
+    assert '{model_answer}' in llm_scoring.input_prompt
+    assert 'Act as a Judge' in (
+        llm_scoring.additional_details['judge_system_prompt']
+    )
+
+
+def test_judge_scoring_does_not_claim_average_aggregation() -> None:
+    """LEXam takes the pointwise minimum; the enum cannot express that."""
+    llm_scoring = _gpt5_results()[OPEN_EVAL_NAME].metric_config.llm_scoring
+
+    assert llm_scoring.aggregation_method is None
+    assert llm_scoring.additional_details['aggregation'] == 'pointwise_minimum'
+
+
+def test_model_identities_are_resolved_not_invented() -> None:
     logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
     gpt5 = next(log for log in logs if log.model_info.name == 'GPT-5')
 
+    assert gpt5.model_info.id == 'openai/gpt-5'
     assert gpt5.model_info.developer == 'openai'
-    assert gpt5.model_info.id == 'openai/GPT-5'
+    details = gpt5.model_info.additional_details
+    assert details['model_id_resolution'] == 'registry_alias'
+    assert details['model_availability'] == 'closed_weights'
+    assert details['leaderboard_label'] == 'GPT-5'
+
+
+def test_every_identity_declares_availability_and_id_provenance() -> None:
+    allowed_sources = {
+        'registry_alias',
+        'registry_canonical',
+        'hf_canonical',
+        'unverified',
+    }
+    for label, identity in _MODEL_IDENTITIES.items():
+        assert identity.availability in {'open_weights', 'closed_weights'}, label
+        assert identity.id_source in allowed_sources, label
+        assert identity.model_id.startswith(f'{identity.developer}/'), label
+        # No leaderboard display label leaks into an id as-is.
+        assert identity.model_id != label
+
+
+def test_evaluation_id_is_keyed_on_the_raw_leaderboard_label() -> None:
+    logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
+    gpt5 = next(log for log in logs if log.model_info.name == 'GPT-5')
+    assert gpt5.evaluation_id.startswith('lexam/GPT-5/')
 
 
 def test_unknown_model_identity_raises() -> None:
