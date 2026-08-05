@@ -66,7 +66,12 @@ Re-derive this list from `REGISTERED_CHECKS`, `_DEPLOYMENT_TYPES`,
   from the installed validator, not from an existing record or an old bot message.
 
 ## §publish — `publish_evaluation_logs`
-Use it instead of writing files yourself; it enforces, before creating anything:
+**Mind which root each entry point wants — they differ, and a mismatch is silent until
+the path check rejects the depth:** `publish_evaluation_logs(base_output_dir=…)` takes the
+**`data` dir**, while `EvaluationLogOutput(base_dir=…)` (for `save_evaluation_logs`) and
+`default_failure_report_path(…)` take **`data/<collection>`**, one level down.
+
+Use the publisher instead of writing files yourself; it enforces, before creating anything:
 - the log re-validates as an `EvaluationLog`;
 - `evaluation_results[0].source_data` exists (it **determines the collection
   directory** — pass `collection_override` when the first result's `dataset_name` isn't
