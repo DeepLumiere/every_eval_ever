@@ -6,6 +6,7 @@ import pytest
 
 from every_eval_ever.adapters.lexam.adapter import (
     _MODEL_IDENTITIES,
+    JUDGE_MODEL_IDS,
     MCQ_CONFIG,
     MCQ_METRIC,
     MCQ_SAMPLES,
@@ -14,10 +15,12 @@ from every_eval_ever.adapters.lexam.adapter import (
     OPEN_QUESTION_METRIC,
     OPEN_QUESTIONS_SAMPLES,
     OPEN_SECTION_TITLE,
+    REGISTRY_HARNESS,
     LEXamAdapter,
     _clean_model_name,
     _extract_section_rows,
     _model_identity,
+    registry_snapshot,
 )
 from every_eval_ever.eval_types import EvaluationLog
 
@@ -224,6 +227,46 @@ def test_every_identity_declares_availability_and_id_provenance() -> None:
         assert identity.developer_org_id, label
         # No leaderboard display label leaks into an id as-is.
         assert identity.model_id != label
+
+
+def test_no_registry_drift_against_the_vendored_snapshot() -> None:
+    """Every registry-facing value must still match the pinned registry state.
+
+    This is the guard that catches an invented metric id or a stale bound: the
+    snapshot is regenerated from a registry checkout, so a drift shows up as a
+    failing test and a reviewable diff rather than as silently wrong data.
+    """
+    snapshot = registry_snapshot()
+    assert snapshot, 'registry_snapshot.json is missing'
+
+    resolved = set(snapshot['models'])
+    known_gaps = set(snapshot['models_absent_from_seed'])
+    for label, identity in _MODEL_IDENTITIES.items():
+        assert identity.model_id in resolved | known_gaps, label
+    for judge_id in JUDGE_MODEL_IDS:
+        assert judge_id in resolved | known_gaps, judge_id
+
+    assert REGISTRY_HARNESS in snapshot['harnesses']
+    assert not snapshot['metrics_unresolved']
+    assert not snapshot['harnesses_unresolved']
+
+    # evaluation_name must resolve to a canonical benchmark.
+    for eval_name in (OPEN_EVAL_NAME, MCQ_EVAL_NAME):
+        assert snapshot['benchmarks'].get(eval_name), eval_name
+
+    # Bounds and direction are the registry's, not the adapter's.
+    for spec in (MCQ_METRIC, OPEN_QUESTION_METRIC):
+        entry = snapshot['metrics'][spec.metric_id]
+        assert entry['min_score'] == spec.canonical_min, spec.metric_id
+        assert entry['max_score'] == spec.canonical_max, spec.metric_id
+        assert entry['lower_is_better'] is False, spec.metric_id
+        assert entry['score_type'] == 'continuous', spec.metric_id
+
+
+def test_one_retrieval_timestamp_per_run() -> None:
+    """All records of a run describe the same retrieval of the page."""
+    logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
+    assert len({log.retrieved_timestamp for log in logs}) == 1
 
 
 def test_deepseek_api_modes_share_one_model_id() -> None:

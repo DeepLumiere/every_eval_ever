@@ -86,6 +86,18 @@ Provenance decisions worth knowing:
   `generation_config.generation_args.reasoning`.
 - Standard errors come from the paper's tables and are attached only while the
   scraped score still matches the score the paper reports.
+- Metric ids, bounds and direction are the registry's, not the adapter's:
+  `accuracy` is canonically a proportion on `[0,1]`, so the leaderboard's
+  percentage is converted onto that scale (with the standard error), while the
+  judge score keeps the `[0,100]` scale of its registry entry.
+  `registry_snapshot.json` vendors just the entities this adapter emits, pinned
+  to the registry revision they came from, and the tests fail if any of them
+  drifts. Refresh it after a registry change:
+
+  ```bash
+  uv run python -m every_eval_ever.adapters.lexam.refresh_registry_snapshot \
+      --registry /path/to/eval-card-registry
+  ```
 
 
 ## Notes

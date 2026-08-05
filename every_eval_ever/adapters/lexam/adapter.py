@@ -27,6 +27,7 @@ the paper reports (see `_score_details`).
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import uuid
@@ -88,9 +89,29 @@ DEEPSEEK_MODE_CITATION = (
 BENCHMARK_KEY = 'lexam'
 DEFAULT_OUTPUT_DIR = 'data'
 
-# eval-card-registry revision the ids, metric bounds and directions below were
-# resolved against. Bump it together with any of those values.
-REGISTRY_REVISION = '0052cd2c48e6918b22192195d911ea7423d20db9'
+# Registry entities this adapter emits. `registry_snapshot.json` vendors just
+# these, pinned to the registry revision they came from, so the tests fail when
+# an id or a metric bound drifts; regenerate it with
+# refresh_registry_snapshot.py.
+SNAPSHOT_PATH = Path(__file__).with_name('registry_snapshot.json')
+REGISTRY_HARNESS = 'lighteval'
+JUDGE_MODEL_IDS = (
+    'openai/gpt-4o-2024-11-20',
+    'deepseek-ai/DeepSeek-V3',
+    'Qwen/Qwen3-32B',
+)
+
+
+def registry_snapshot() -> dict:
+    """Vendored registry entities, or an empty mapping if absent."""
+    if not SNAPSHOT_PATH.exists():
+        return {}
+    return json.loads(SNAPSHOT_PATH.read_text(encoding='utf-8'))
+
+
+REGISTRY_REVISION = (
+    registry_snapshot().get('_meta', {}).get('registry_revision', 'unknown')
+)
 
 # Open questions: the leaderboard scores the `open_question` *test* split
 # (paper appendix B.2: test 2,541 / dev 300).
@@ -665,7 +686,7 @@ def _open_question_judge_scoring() -> LlmScoring:
             JudgeConfig(
                 model_info=_judge_model_info(
                     'gpt-4o',
-                    'openai/gpt-4o-2024-11-20',
+                    JUDGE_MODEL_IDS[0],
                     'closed_weights',
                     'externally_managed',
                 ),
@@ -673,7 +694,7 @@ def _open_question_judge_scoring() -> LlmScoring:
             JudgeConfig(
                 model_info=_judge_model_info(
                     'DeepSeek-V3',
-                    'deepseek-ai/DeepSeek-V3',
+                    JUDGE_MODEL_IDS[1],
                     'open_weights',
                     'unknown',
                 ),
@@ -681,7 +702,7 @@ def _open_question_judge_scoring() -> LlmScoring:
             JudgeConfig(
                 model_info=_judge_model_info(
                     'Qwen3-32B',
-                    'Qwen/Qwen3-32B',
+                    JUDGE_MODEL_IDS[2],
                     'open_weights',
                     'unknown',
                 ),
@@ -854,6 +875,103 @@ def _generation_config(identity: ModelIdentity) -> GenerationConfig | None:
     )
 
 
+@dataclass(frozen=True)
+class LeaderboardScores:
+    """Both leaderboard columns, parsed once per run."""
+
+    open_scores: dict[str, float]
+    mcq_scores: dict[str, float]
+
+    @property
+    def labels(self) -> list[str]:
+        return sorted(set(self.open_scores) | set(self.mcq_scores))
+
+
+def _parse_scores(page_html: str) -> LeaderboardScores:
+    return LeaderboardScores(
+        open_scores={
+            row.model_name: row.score
+            for row in _extract_section_rows(page_html, OPEN_SECTION_TITLE)
+        },
+        mcq_scores={
+            row.model_name: row.score
+            for row in _extract_section_rows(page_html, MCQ_SECTION_TITLE)
+        },
+    )
+
+
+def _build_log(
+    label: str,
+    scores: LeaderboardScores,
+    retrieved_ts: str,
+    url: str,
+) -> EvaluationLog:
+    """One EvaluationLog for one leaderboard label.
+
+    Raises:
+        ValueError: the label has no identity mapping, or no score at all.
+    """
+    identity = _model_identity(label)
+    evaluation_results: list[EvaluationResult] = []
+    if label in scores.open_scores:
+        evaluation_results.append(
+            _build_open_question_result(
+                scores.open_scores[label], label, identity
+            )
+        )
+    if label in scores.mcq_scores:
+        evaluation_results.append(
+            _build_mcq_result(scores.mcq_scores[label], label, identity)
+        )
+    if not evaluation_results:
+        raise ValueError(f'No leaderboard score for model: {label}')
+
+    return EvaluationLog(
+        schema_version=SCHEMA_VERSION,
+        # Keyed on the RAW leaderboard label, not the resolved canonical id: a
+        # registry re-mapping must not change this record's identity.
+        evaluation_id=f'{BENCHMARK_KEY}/{label}/{retrieved_ts}',
+        retrieved_timestamp=retrieved_ts,
+        eval_library=EvalLibrary(
+            # The harness, not the benchmark: LEXam documents evaluation
+            # through HuggingFace lighteval community tasks. No library
+            # version is published.
+            name=REGISTRY_HARNESS,
+            version='unknown',
+            additional_details={
+                'benchmark': BENCHMARK_KEY,
+                'leaderboard_url': LEADERBOARD_PAGE_URL,
+                'github': GITHUB_REPO_URL,
+                'lighteval_tasks': (
+                    'community|lexamoq_open_question, '
+                    f'community|lexammcq_{MCQ_CONFIG}'
+                ),
+            },
+        ),
+        source_metadata=SourceMetadata(
+            source_name='LEXam Leaderboard',
+            source_type=SourceType.documentation,
+            source_organization_name='LEXam-Benchmark',
+            source_organization_url=GITHUB_REPO_URL,
+            # Relative to the *model developer*: LEXam-Benchmark scores models
+            # it did not build.
+            evaluator_relationship=EvaluatorRelationship.third_party,
+            additional_details={
+                'leaderboard_page': LEADERBOARD_PAGE_URL,
+                'source_html': url,
+                'citation': PAPER_URL,
+            },
+        ),
+        model_info=ModelInfo(
+            name=label,
+            id=identity.model_id,
+            developer=identity.developer,
+            additional_details=_model_details(identity, label),
+        ),
+        evaluation_results=evaluation_results,
+    )
+
+
 class LEXamAdapter:
     """Converts LEXam public leaderboard rows into EvaluationLog objects."""
 
@@ -861,102 +979,29 @@ class LEXamAdapter:
         self,
         html: str | None = None,
         url: str = LEADERBOARD_URL,
-        only: str | None = None,
     ) -> list[EvaluationLog]:
         """Fetch the LEXam leaderboard and return one log per model.
 
         Args:
             html: Optional pre-fetched HTML (used in tests).
             url: Leaderboard HTML URL when *html* is not provided.
-            only: Convert just this leaderboard label, when given.
 
         Returns:
             One EvaluationLog per model, combining open and MCQ metrics when
-            both are available.
+            both are available. All records of one run share a retrieval
+            timestamp.
+
+        Raises:
+            ValueError: any leaderboard label has no identity mapping. Use
+                `fetch_leaderboard_result` to report those instead.
         """
         page_html = html if html is not None else _fetch_html(url)
-        open_rows = _extract_section_rows(page_html, OPEN_SECTION_TITLE)
-        mcq_rows = _extract_section_rows(page_html, MCQ_SECTION_TITLE)
-
-        open_scores = {row.model_name: row.score for row in open_rows}
-        mcq_scores = {row.model_name: row.score for row in mcq_rows}
-        model_names = sorted(set(open_scores) | set(mcq_scores))
-        if only is not None:
-            model_names = [name for name in model_names if name == only]
-
+        scores = _parse_scores(page_html)
         retrieved_ts = get_current_unix_timestamp()
-        logs: list[EvaluationLog] = []
-
-        for model_name in model_names:
-            identity = _model_identity(model_name)
-            evaluation_results: list[EvaluationResult] = []
-            if model_name in open_scores:
-                evaluation_results.append(
-                    _build_open_question_result(
-                        open_scores[model_name], model_name, identity
-                    )
-                )
-            if model_name in mcq_scores:
-                evaluation_results.append(
-                    _build_mcq_result(
-                        mcq_scores[model_name], model_name, identity
-                    )
-                )
-            if not evaluation_results:
-                continue
-
-            logs.append(
-                EvaluationLog(
-                    schema_version=SCHEMA_VERSION,
-                    # Keyed on the RAW leaderboard label, not the resolved
-                    # canonical id: a registry re-mapping must not change this
-                    # record's identity.
-                    evaluation_id=(
-                        f'{BENCHMARK_KEY}/{model_name}/{retrieved_ts}'
-                    ),
-                    retrieved_timestamp=retrieved_ts,
-                    eval_library=EvalLibrary(
-                        # The harness, not the benchmark: LEXam documents
-                        # evaluation through HuggingFace lighteval community
-                        # tasks. No library version is published.
-                        name='lighteval',
-                        version='unknown',
-                        additional_details={
-                            'benchmark': BENCHMARK_KEY,
-                            'leaderboard_url': LEADERBOARD_PAGE_URL,
-                            'github': GITHUB_REPO_URL,
-                            'lighteval_tasks': (
-                                'community|lexamoq_open_question, '
-                                f'community|lexammcq_{MCQ_CONFIG}'
-                            ),
-                        },
-                    ),
-                    source_metadata=SourceMetadata(
-                        source_name='LEXam Leaderboard',
-                        source_type=SourceType.documentation,
-                        source_organization_name='LEXam-Benchmark',
-                        source_organization_url=GITHUB_REPO_URL,
-                        # Relative to the *model developer*: LEXam-Benchmark
-                        # scores models it did not build.
-                        evaluator_relationship=EvaluatorRelationship.third_party,
-                        additional_details={
-                            'leaderboard_page': LEADERBOARD_PAGE_URL,
-                            'source_html': url,
-                            'citation': PAPER_URL,
-                        },
-                    ),
-                    model_info=ModelInfo(
-                        name=model_name,
-                        id=identity.model_id,
-                        developer=identity.developer,
-                        additional_details=_model_details(
-                            identity, model_name
-                        ),
-                    ),
-                    evaluation_results=evaluation_results,
-                )
-            )
-
+        logs = [
+            _build_log(label, scores, retrieved_ts, url)
+            for label in scores.labels
+        ]
         logger.info('Converted %d LEXam leaderboard model(s).', len(logs))
         return logs
 
@@ -973,20 +1018,14 @@ class LEXamAdapter:
         fails the command afterwards.
         """
         page_html = html if html is not None else _fetch_html(url)
-        open_rows = _extract_section_rows(page_html, OPEN_SECTION_TITLE)
-        mcq_rows = _extract_section_rows(page_html, MCQ_SECTION_TITLE)
-        labels = sorted(
-            {row.model_name for row in open_rows}
-            | {row.model_name for row in mcq_rows}
-        )
+        scores = _parse_scores(page_html)
+        retrieved_ts = get_current_unix_timestamp()
 
         records: list[EvaluationLog] = []
         failures: list[SourceRecordFailure] = []
-        for label in labels:
+        for label in scores.labels:
             try:
-                records.extend(
-                    self.fetch_leaderboard(html=page_html, url=url, only=label)
-                )
+                records.append(_build_log(label, scores, retrieved_ts, url))
             except ValueError as exc:
                 failures.append(
                     SourceRecordFailure(
@@ -996,9 +1035,10 @@ class LEXamAdapter:
                     )
                 )
 
+        logger.info('Converted %d LEXam leaderboard model(s).', len(records))
         return SourceConversionResult(
             source_name='LEXam Leaderboard',
-            total_records=len(labels),
+            total_records=len(scores.labels),
             records=records,
             failures=failures,
         )
