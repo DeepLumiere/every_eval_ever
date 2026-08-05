@@ -133,10 +133,38 @@ comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
 - `metric_config.metric_name` — the **metric** (`accuracy`, `pass rate`), NOT the
   eval. Most-conflated field. `metric_kind` — the normalized family. There is **no
   `metric_type`** field.
-- `metric_config.metric_id` — the cross-source join key, so **always set it and always
-  namespace it**: `<src>.<metric>`. Bare `score`/`rank`/`elo`/`cost` collide with every
-  other leaderboard's generic metric and are the most repeated review comment on adapter
-  PRs. (Not schema-required — which is exactly why it gets omitted.)
+- `metric_config.metric_id` — the cross-source join key, so **always set it**. The
+  schema's own rule: *"Use a canonical global id when applicable (e.g. `accuracy`,
+  `f1_macro`, `auroc`, `rmse`, `pass_at_k`). For benchmark/leaderboard-specific metrics,
+  use a namespaced id (e.g. `rewardbench.overall`, `lmarena.elo`)."* So:
+  - **A real global metric → the registry's canonical metric id** (`accuracy`, `f1`,
+    `exact-match`, `pass-at-1`). Resolve it (`entity_type: metric`) — metrics are
+    registry entities like models. Accuracy on a 4-choice MCQ set *is* `accuracy`;
+    minting `<src>.accuracy` fragments the one join that makes the datastore worth
+    querying.
+  - **A leaderboard-specific construct → a namespaced or registry-slug id**
+    (`rewardbench.overall`, `lmarena.elo`, `lexam-open-question-judge-score`). Better
+    still, **register it** so the next source joins with you (the registry already
+    carries e.g. `mteb-score`, `mmau-pro-open-ended-judge-score`).
+  - **Never a bare semantically-empty id** — `score`/`rank`/`cost` mean something
+    different on every leaderboard; namespace those or resolve them to a specific
+    registry metric. This is the most repeated review comment on adapter PRs.
+  - Keeping `accuracy` on two benchmarks apart is **`evaluation_name`'s job**, not the
+    metric id's. Don't smuggle the benchmark into `metric_id` to get separation you
+    already have.
+  (Not schema-required — which is exactly why it gets omitted.)
+- **The canonical *scale* is a property of the metric, and it comes from the registry
+  entry — not from whatever scale the source printed.** The registry stores bounds per
+  metric: every accuracy-family entry is `[0,1]`, while benchmark-specific judge scores
+  (`mmau-pro-open-ended-judge-score`, `mteb-score`) are `[0,100]`. So take
+  `min_score`/`max_score`/`lower_is_better`/`score_type` from the resolved entry, and
+  **convert the source value onto that scale** (a leaderboard's `62.65` becomes
+  `0.6265` for `accuracy`, `metric_unit: proportion`). Convert the **uncertainty with
+  it** — a standard error is a spread in the score's units — and keep the source's raw
+  figure in `score_details.details` so the conversion stays auditable. Never invent a
+  bound to fit the number you scraped; if the metric isn't in the registry, register it
+  from a cited definition (`utils/paperswithcode/METRIC_MAINTENANCE.md` is the worked
+  example) rather than guessing.
 - `metric_config.llm_scoring` — required shape for **judge/rubric-scored** metrics:
   `judges` (≥1, and each `JudgeConfig` needs a **full `model_info`** for the judge model)
   plus `input_prompt`, the **actual judging prompt template** (not a paraphrase or a
