@@ -88,6 +88,10 @@ DEEPSEEK_MODE_CITATION = (
 BENCHMARK_KEY = 'lexam'
 DEFAULT_OUTPUT_DIR = 'data'
 
+# eval-card-registry revision the ids, metric bounds and directions below were
+# resolved against. Bump it together with any of those values.
+REGISTRY_REVISION = '0052cd2c48e6918b22192195d911ea7423d20db9'
+
 # Open questions: the leaderboard scores the `open_question` *test* split
 # (paper appendix B.2: test 2,541 / dev 300).
 OPEN_QUESTION_CONFIG = 'open_question'
@@ -170,6 +174,58 @@ class LeaderboardRow:
 
     model_name: str
     score: float
+
+
+@dataclass(frozen=True)
+class MetricSpec:
+    """One metric as the eval-card-registry defines it.
+
+    `metric_id` is the registry's canonical metric id, which the schema asks
+    for whenever one applies ("Use a canonical global id when applicable ...
+    For benchmark/leaderboard-specific metrics, use a namespaced id").
+    Bounds and direction come from the registry entry rather than from
+    whatever scale the leaderboard happened to print, and `percent_divisor`
+    maps the published percentage onto that canonical scale.
+    """
+
+    metric_id: str
+    metric_name: str
+    metric_kind: str
+    unit: str
+    canonical_min: float
+    canonical_max: float
+    percent_divisor: float
+    registry_status: str
+
+
+# `accuracy` is an existing reviewed registry metric, canonically a proportion
+# on [0, 1] (every accuracy-family entry in seed/metrics.yaml is [0, 1]), so
+# the leaderboard's percentage is divided onto that scale.
+MCQ_METRIC = MetricSpec(
+    metric_id='accuracy',
+    metric_name='Multiple-Choice Accuracy',
+    metric_kind='accuracy',
+    unit='proportion',
+    canonical_min=0.0,
+    canonical_max=1.0,
+    percent_divisor=100.0,
+    registry_status='registered',
+)
+
+# The judge score has no canonical global equivalent. The registry's existing
+# benchmark-specific judge metrics (`mmau-pro-open-ended-judge-score`,
+# `longaudiobench-overall-judge-score`) are slugs on [0, 100], so this follows
+# that form and scale and is proposed for registration alongside the adapter.
+OPEN_QUESTION_METRIC = MetricSpec(
+    metric_id='lexam-open-question-judge-score',
+    metric_name='Open Question Judge Score',
+    metric_kind='judge_score',
+    unit='percent',
+    canonical_min=0.0,
+    canonical_max=100.0,
+    percent_divisor=1.0,
+    registry_status='proposed',
+)
 
 
 @dataclass(frozen=True)
@@ -649,34 +705,60 @@ def _open_question_judge_scoring() -> LlmScoring:
     )
 
 
-def _score_details(score: float, label: str, section: str) -> ScoreDetails:
-    """Score plus the paper's bootstrapped standard error when it still applies.
+def _metric_details(spec: MetricSpec) -> dict[str, str]:
+    return {
+        'metric_registry_status': spec.registry_status,
+        'bound_registry_revision': REGISTRY_REVISION,
+        'leaderboard_reported_unit': 'percent',
+    }
 
-    The leaderboard HTML publishes no uncertainty, so the standard error comes
-    from the paper's Table 1 / Table 10. It is attached only when the scraped
-    score still equals the score the paper reports for that model, so a
-    leaderboard update drops the standard error instead of pairing it with a
-    number it was never computed for.
+
+def _score_details(
+    score: float, label: str, section: str, spec: MetricSpec
+) -> ScoreDetails:
+    """Score on the metric's canonical scale, plus the published uncertainty.
+
+    Two independent conversions happen here.
+
+    *Scale*: the leaderboard reports both columns as percentages, but the
+    canonical scale belongs to the **metric**, taken from its
+    eval-card-registry entry — `accuracy` is a proportion `[0, 1]` registry
+    wide, while benchmark-specific judge scores such as
+    `mmau-pro-open-ended-judge-score` are `[0, 100]`. So the MCQ column is
+    divided onto `[0, 1]` and the judge column is left as published, and the
+    raw percentage is kept in `details` either way.
+
+    *Uncertainty*: the leaderboard HTML publishes none, so the bootstrapped
+    standard error comes from the paper's Table 1 / Table 10. It is attached
+    only while the scraped score still equals the score the paper reports for
+    that model, so a leaderboard update drops the standard error rather than
+    pairing it with a number it was never computed for. It is a spread in the
+    same units as the score, so it is rescaled with it.
     """
-    score = round(score, 2)
-    samples = (
-        OPEN_QUESTIONS_SAMPLES if section == 'open' else MCQ_SAMPLES
-    )
+    published_percent = round(score, 2)
+    samples = OPEN_QUESTIONS_SAMPLES if section == 'open' else MCQ_SAMPLES
+    details = {'metric_registry_revision': REGISTRY_REVISION}
+    if spec.percent_divisor != 1.0:
+        details['leaderboard_reported_percent'] = str(published_percent)
+
+    canonical = round(published_percent / spec.percent_divisor, 6)
     published = _PAPER_UNCERTAINTY.get(label, {}).get(section)
-    if published is None or published[0] != score:
+    if published is None or published[0] != published_percent:
         return ScoreDetails(
-            score=score,
+            score=canonical,
             uncertainty=Uncertainty(num_samples=samples),
+            details=details,
         )
     return ScoreDetails(
-        score=score,
+        score=canonical,
         uncertainty=Uncertainty(
             standard_error=StandardError(
-                value=published[1], method='bootstrap'
+                value=round(published[1] / spec.percent_divisor, 6),
+                method='bootstrap',
             ),
             num_samples=samples,
         ),
-        details={'standard_error_source': PAPER_TABLE_CITATION},
+        details={**details, 'standard_error_source': PAPER_TABLE_CITATION},
     )
 
 
@@ -686,10 +768,10 @@ def _build_open_question_result(
     return EvaluationResult(
         evaluation_name=f'{BENCHMARK_KEY}.{OPEN_QUESTION_CONFIG}',
         metric_config=MetricConfig(
-            metric_id='lexam.open_question_judge_score',
-            metric_name='Open Question Judge Score',
-            metric_kind='judge_score',
-            metric_unit='percent',
+            metric_id=OPEN_QUESTION_METRIC.metric_id,
+            metric_name=OPEN_QUESTION_METRIC.metric_name,
+            metric_kind=OPEN_QUESTION_METRIC.metric_kind,
+            metric_unit=OPEN_QUESTION_METRIC.unit,
             evaluation_description=(
                 'Mean LLM-judge score on the open-ended law exam questions '
                 f'of the LEXam {OPEN_QUESTION_CONFIG} test split '
@@ -698,11 +780,14 @@ def _build_open_question_result(
             ),
             lower_is_better=False,
             score_type=ScoreType.continuous,
-            min_score=0.0,
-            max_score=100.0,
+            min_score=OPEN_QUESTION_METRIC.canonical_min,
+            max_score=OPEN_QUESTION_METRIC.canonical_max,
             llm_scoring=_open_question_judge_scoring(),
+            additional_details=_metric_details(OPEN_QUESTION_METRIC),
         ),
-        score_details=_score_details(score, label, 'open'),
+        score_details=_score_details(
+            score, label, 'open', OPEN_QUESTION_METRIC
+        ),
         source_data=_open_question_source(),
         generation_config=_generation_config(identity),
     )
@@ -714,10 +799,10 @@ def _build_mcq_result(
     return EvaluationResult(
         evaluation_name=f'{BENCHMARK_KEY}.{MCQ_CONFIG}',
         metric_config=MetricConfig(
-            metric_id='lexam.mcq_accuracy',
-            metric_name='Multiple-Choice Accuracy',
-            metric_kind='accuracy',
-            metric_unit='percent',
+            metric_id=MCQ_METRIC.metric_id,
+            metric_name=MCQ_METRIC.metric_name,
+            metric_kind=MCQ_METRIC.metric_kind,
+            metric_unit=MCQ_METRIC.unit,
             evaluation_description=(
                 'Accuracy on the LEXam four-choice multiple-choice questions '
                 f'({MCQ_CONFIG}, n={MCQ_SAMPLES}); the published leaderboard '
@@ -726,10 +811,11 @@ def _build_mcq_result(
             ),
             lower_is_better=False,
             score_type=ScoreType.continuous,
-            min_score=0.0,
-            max_score=100.0,
+            min_score=MCQ_METRIC.canonical_min,
+            max_score=MCQ_METRIC.canonical_max,
+            additional_details=_metric_details(MCQ_METRIC),
         ),
-        score_details=_score_details(score, label, 'mcq'),
+        score_details=_score_details(score, label, 'mcq', MCQ_METRIC),
         source_data=_mcq_source(),
         generation_config=_generation_config(identity),
     )

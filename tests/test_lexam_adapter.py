@@ -7,9 +7,11 @@ import pytest
 from every_eval_ever.adapters.lexam.adapter import (
     _MODEL_IDENTITIES,
     MCQ_CONFIG,
+    MCQ_METRIC,
     MCQ_SAMPLES,
     MCQ_SECTION_TITLE,
     OPEN_QUESTION_CONFIG,
+    OPEN_QUESTION_METRIC,
     OPEN_QUESTIONS_SAMPLES,
     OPEN_SECTION_TITLE,
     LEXamAdapter,
@@ -85,10 +87,27 @@ def test_fetch_leaderboard_combines_metrics_per_model() -> None:
     assert len(by_name['Phi-4'].evaluation_results) == 1
 
 
-def test_fetch_leaderboard_open_question_score() -> None:
+def test_scores_are_emitted_on_each_metrics_canonical_scale() -> None:
+    """accuracy is a registry proportion; the judge score is a 0-100 slug."""
     results = _gpt5_results()
-    assert results[OPEN_EVAL_NAME].score_details.score == 70.20
-    assert results[MCQ_EVAL_NAME].score_details.score == 62.65
+    open_result = results[OPEN_EVAL_NAME]
+    mcq_result = results[MCQ_EVAL_NAME]
+
+    # Judge score keeps the published 0-100 scale.
+    assert open_result.score_details.score == 70.20
+    assert open_result.metric_config.min_score == 0.0
+    assert open_result.metric_config.max_score == 100.0
+    assert open_result.metric_config.metric_unit == 'percent'
+
+    # MCQ accuracy is rescaled onto the registry's [0, 1] accuracy scale.
+    assert mcq_result.score_details.score == 0.6265
+    assert mcq_result.metric_config.min_score == 0.0
+    assert mcq_result.metric_config.max_score == 1.0
+    assert mcq_result.metric_config.metric_unit == 'proportion'
+    assert (
+        mcq_result.score_details.details['leaderboard_reported_percent']
+        == '62.65'
+    )
 
 
 def test_fetch_leaderboard_source_metadata_is_documentation() -> None:
@@ -128,15 +147,24 @@ def test_mcq_result_is_scoped_to_the_published_four_choice_config() -> None:
     assert mcq_source.additional_details['config'] == 'mcq_4_choices'
 
 
-def test_fetch_leaderboard_metric_ids() -> None:
+def test_metric_ids_are_registry_canonical() -> None:
+    """The schema asks for a canonical global id whenever one applies."""
     results = _gpt5_results()
-    assert (
-        results[OPEN_EVAL_NAME].metric_config.metric_id
-        == 'lexam.open_question_judge_score'
-    )
-    assert results[MCQ_EVAL_NAME].metric_config.metric_id == 'lexam.mcq_accuracy'
-    assert results[OPEN_EVAL_NAME].metric_config.metric_kind == 'judge_score'
+
+    assert MCQ_METRIC.metric_id == 'accuracy'
+    assert MCQ_METRIC.registry_status == 'registered'
+    assert results[MCQ_EVAL_NAME].metric_config.metric_id == 'accuracy'
     assert results[MCQ_EVAL_NAME].metric_config.metric_kind == 'accuracy'
+
+    # No canonical global judge metric exists; this one is a registry-shaped
+    # slug proposed alongside the adapter, not an ad-hoc namespaced id.
+    assert OPEN_QUESTION_METRIC.metric_id == 'lexam-open-question-judge-score'
+    assert OPEN_QUESTION_METRIC.registry_status == 'proposed'
+    assert results[OPEN_EVAL_NAME].metric_config.metric_kind == 'judge_score'
+    for result in results.values():
+        details = result.metric_config.additional_details
+        assert details['bound_registry_revision']
+        assert details['metric_registry_status'] in {'registered', 'proposed'}
 
 
 def test_fetch_leaderboard_open_metric_has_llm_scoring() -> None:
@@ -232,6 +260,9 @@ def test_standard_error_attached_only_when_score_still_matches() -> None:
     assert open_uncertainty.standard_error.value == 0.41
     assert open_uncertainty.standard_error.method == 'bootstrap'
     assert open_uncertainty.num_samples == OPEN_QUESTIONS_SAMPLES
+    # The MCQ standard error is rescaled with its score onto [0, 1].
+    mcq_uncertainty = results[MCQ_EVAL_NAME].score_details.uncertainty
+    assert mcq_uncertainty.standard_error.value == 0.0117
     assert 'arXiv' in results[OPEN_EVAL_NAME].score_details.details[
         'standard_error_source'
     ]
@@ -245,7 +276,7 @@ def test_standard_error_attached_only_when_score_still_matches() -> None:
     )
     assert open_result.score_details.score == 70.21
     assert open_result.score_details.uncertainty.standard_error is None
-    assert open_result.score_details.details is None
+    assert 'standard_error_source' not in open_result.score_details.details
 
 
 def test_unmapped_row_is_reported_not_fatal() -> None:
