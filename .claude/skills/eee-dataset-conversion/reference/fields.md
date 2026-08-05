@@ -46,9 +46,14 @@ leaderboard snapshot — none has a typed field, so it goes in the log or
 repo that actually exists, not just a name in a table.
 
 ## §shape — decide before writing code
-1. **Who produced the scores?** you ran it (have raw outputs) → `evaluation_run`;
-   you scraped reported numbers → `documentation`. Item-level data is a strong
-   tell for `evaluation_run`.
+1. **What artifact do you hold?** — this, not who ran the compute, sets `source_type`
+   (who ran it is `evaluator_relationship`, a separate axis). Raw **per-item run
+   outputs** → `evaluation_run` — *even when a third party ran them* (WILD: Kensho ran
+   the evals and published the raw items → `evaluation_run` + `third_party`).
+   **Only-aggregate reported numbers** → `documentation` — *even though a pipeline
+   produced them* (a leaderboard/paper scrape stays `documentation`; "a run produced
+   the leaderboard" does not make your scrape an `evaluation_run`). Item-level data is
+   the strong tell for `evaluation_run`. See source_metadata.
 2. **Aggregate-only or item-level?** headline per (model, benchmark) → aggregate
    `.json` (always); per-example too → instance `_samples.jsonl` (see
    `instance-level.md`).
@@ -57,7 +62,13 @@ repo that actually exists, not just a name in a table.
    benchmark has many subtasks and/or its own per-benchmark instance sidecar.
 
 ## source_metadata (per log)
-- `source_type` — `documentation` (scraped) vs `evaluation_run` (ran it).
+- `source_type` — the **artifact you hold**, NOT who ran it: raw per-item run outputs
+  → `evaluation_run` (even if a third party ran them); only-aggregate reported numbers
+  → `documentation` (a leaderboard scrape stays `documentation` even though a pipeline
+  produced the numbers). `evaluator_relationship` separately records WHO ran it. (The
+  README/schema phrase it "run locally"; that under-specifies third-party raw runs —
+  the artifact-you-hold test is what governs, and it agrees on every case in the
+  datastore.)
 - `source_name` — the **platform/leaderboard**, NOT the benchmark or author.
 - `source_organization_name` — the **aggregator/publisher org**, NOT a username
   or the model developer.
@@ -66,8 +77,20 @@ repo that actually exists, not just a name in a table.
   `first_party|third_party|collaborative|other` (no `self`).
 
 ## model_info
-- `id` — HF `developer/model`; **canonicalize via the registry**, don't invent.
-  Don't bake effort/mode/quant tiers into it; dated snapshots are fine.
+- `id` — the registry-**canonical** join key. Default: **resolve** the raw HF
+  `developer/model` against the eval-card-registry resolver (hosted
+  `POST /api/v1/resolve`, `entity_type:model`) and use its `canonical_id`; offer an
+  opt-out flag (e.g. `--no-registry-resolve`) for speed/offline/determinism, and on
+  opt-out or a network error fall back to the path id **marked unverified — never
+  fatal**. Record resolution provenance (`strategy`/`confidence`/`created_new`/
+  `review_status`) in `additional_details`, and surface auto-created-draft /
+  low-confidence ids to the decision log (they hit the "new canonical id" ask). Don't
+  invent ids; don't bake effort/mode/quant tiers in; dated snapshots are fine. See
+  `registry.md`.
+- **`evaluation_id` must NOT be keyed on the resolved id** — key it on the RAW source
+  identity (path/repo + eval time). The registry may re-map a freshly auto-created
+  draft later; a moving canonical id would break re-ingest idempotency. Resolved id =
+  JOIN key (`model_info.id`); raw identity = RECORD identity (`evaluation_id`).
 - `name` = raw/display; `developer` = the org; `inference_platform` (API host) vs
   `inference_engine` (vLLM) — `unknown` acceptable.
 
@@ -107,8 +130,9 @@ repo that actually exists, not just a name in a table.
 - `retrieved_timestamp` — required string epoch = when **this record** was created
   (**now**).
 - `evaluation_timestamp` — when the eval ran (proxy with the source's date).
-- Key `evaluation_id` on a **stable** value (eval time / dataset version) so reruns
-  are idempotent. **Never key it on `now`.**
+- Key `evaluation_id` on a **stable** value (eval time / dataset version / raw source
+  id) so reruns are idempotent. **Never key it on `now`** — and never on the
+  registry-resolved canonical id either (it can move; see model_info).
 - **Leave optional fields unset rather than guess.**
 
 ## additional_details (everywhere)

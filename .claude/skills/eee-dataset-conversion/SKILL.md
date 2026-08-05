@@ -48,10 +48,12 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
    for the surface checklist, the coverage-vs-fill split, and which wins when they
    disagree. Filter hygiene junk (`.ipynb_checkpoints`, `*-checkpoint.json`) and
    segregate hand-curated baselines from harness runs.
-2. **Decide the shape** — `source_type` (`documentation` if scraped vs
-   `evaluation_run` if you ran it); aggregate-only vs +instances; grain (one log
-   per model = default, or per model×benchmark when a benchmark has its own
-   instance sidecar). See `reference/fields.md` §shape.
+2. **Decide the shape** — `source_type` is set by the **artifact you hold**, not who
+   ran the compute: raw per-item outputs → `evaluation_run` (even if a third party ran
+   them); only-aggregate reported numbers → `documentation` (a leaderboard scrape stays
+   `documentation`). Then: aggregate-only vs +instances; grain (one log per model =
+   default, or per model×benchmark when a benchmark has its own instance sidecar). See
+   `reference/fields.md` §shape.
 3. **Copy a template / reference adapter** — `templates/aggregate_adapter.py`
    (always) and, for per-item data, `templates/instance_sidecar.py` (runnable
    skeletons verified against the live validator). For a fuller real example,
@@ -62,7 +64,11 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
 4. **Fill fields carefully** — the field traps are the whole game. Load
    `reference/fields.md` (aggregate) and `reference/instance-level.md` (jsonl).
 5. **Canonicalize ids** — model + benchmark ids must resolve in the
-   eval-card-registry (else they fragment the data). See `reference/registry.md`.
+   eval-card-registry (else they fragment the data). Default: **resolve live** against
+   the hosted resolver and use `canonical_id` for the join-key fields, with an opt-out
+   flag + never-fatal fallback to the raw id (marked unverified). **But never key
+   `evaluation_id` on the resolved id** — that's a moving join key; the record identity
+   rides the raw source id. See `reference/registry.md`.
 6. **Verify** — `python -m every_eval_ever validate <files>` (files/glob, **not** a
    dir), an offline unit test, ruff, a live smoke run, and a **content** spot-check.
    See `reference/verification.md`.

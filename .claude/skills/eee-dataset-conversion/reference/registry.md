@@ -9,13 +9,31 @@ fragment the data (two ids for one thing), so this is part of shipping an adapte
 
 What an adapter author needs here:
 - **Search the registry first; alias your raw slug to the *existing* canonical;
-  create a new canonical only if the entity is genuinely absent** — and since a new
-  canonical is a lasting namespace decision, **ask the operator** before doing so
-  (SKILL.md step 7), don't mint one silently.
-- **Verify or flag, don't assume.** You usually can't resolve ids from inside this
-  repo (the registry is separate). Either check against its resolver (`POST /resolve`)
-  or record each id as **"unverified — maintainer confirm"** in your decision log; an
-  assumed-canonical id that validates but doesn't resolve silently fragments the data.
+  create a new canonical only if the entity is genuinely absent** — a new canonical
+  is a lasting namespace decision, so **ask the operator** before deliberately minting
+  one (SKILL.md step 7). (A *batch* adapter can't gate per-id: resolve-by-default will
+  auto-create drafts for the tail — surface those in the decision log rather than block,
+  see next bullet.)
+- **Resolve by default; flag what stays unverified.** The registry is a separate repo,
+  but its resolver is a **hosted, no-auth endpoint**:
+  `POST https://evaleval-entity-registry.hf.space/api/v1/resolve` with
+  `{"raw_value","entity_type"}` (`entity_type` ∈ `model`/`benchmark`/`metric`/`harness`/
+  `org`/…), returning `canonical_id` + `strategy`/`confidence`/`created_new`/
+  `review_status`. **Prefer resolving live** and use `canonical_id` for the join-key
+  field (`model_info.id`); record the provenance fields in `additional_details`. Give
+  the adapter an **opt-out flag** (e.g. `--no-registry-resolve`) for speed/offline/
+  determinism, and on opt-out **or any network error fall back to the path id, marked
+  unverified — never fatal** (a converter must not die because a Space was asleep). Use
+  `requests` (already a dep) so the flag is about speed, not a new dependency. Whatever
+  the resolver couldn't confidently place — `created_new` drafts, low `confidence`,
+  non-`reviewed` status — goes in the decision log for a follow-up alias PR. (Older
+  adapters canonicalized offline + shipped an alias PR with no live call; that's still
+  valid, but resolve-by-default is the cleaner default.)
+- **Never key `evaluation_id` on the resolved canonical id.** Resolution is a *join
+  key* (→ `model_info.id`); a record's *identity* (`evaluation_id`) must ride the RAW
+  source identity (path/repo + eval time). The registry can re-map a freshly
+  auto-created draft later, and an `evaluation_id` that moved with it would silently
+  break re-ingest idempotency. Raw = record identity; canonical = join key.
 - **Disambiguate look-alikes** — `arc` (AI2 Reasoning Challenge, `allenai/ai2_arc`)
   is a *different* dataset from `arc-agi` (Chollet). Confirm from the paper.
 - Adding aliases/canonicals is a **separate PR to the registry repo** (not the
