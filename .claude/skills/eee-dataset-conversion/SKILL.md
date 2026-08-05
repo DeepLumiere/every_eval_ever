@@ -18,9 +18,13 @@ metadata:
 > hardcoded scorers, non-idempotent ids) pass the schema and are still wrong.
 > Always spot-check *content*, not just validity.
 
-*Written against EEE `SCHEMA_VERSION` `0.2.2` (import it from
+*Written against EEE `SCHEMA_VERSION` `0.3.0` (import it from
 `every_eval_ever.helpers`; never hardcode). If that value has moved, re-verify the
-field claims in `reference/` against the live schema — the schema always wins.*
+field claims in `reference/` against the live schema — the schema always wins.
+`tests/test_skill_conversion.py` pins this marker and re-validates this skill's
+templates + frozen reference records, so a schema or validator change fails CI here
+rather than in your PR. If that test is red, fix the skill, then regenerate the
+frozen records.*
 
 > **How this runs.** A person (the **operator**) runs you and can answer questions
 > mid-run — you are **not fully autonomous**. When a choice *sets policy* (step 7's
@@ -57,10 +61,16 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
 3. **Copy a template / reference adapter** — `templates/aggregate_adapter.py`
    (always) and, for per-item data, `templates/instance_sidecar.py` (runnable
    skeletons verified against the live validator). For a fuller real example,
-   mirror `utils/llm_stats` (aggregate/documentation), `utils/hfopenllm_v2`
-   (documentation, many models), or `utils/openeval` (aggregate + instance
-   sidecars — the canonical write-order). Adapters run as
-   `uv run python -m utils.<name>.adapter`; `__init__.py` just marks the package.
+   mirror `every_eval_ever/adapters/llm_stats` (aggregate/documentation),
+   `.../hfopenllm_v2` (documentation, many models), or `.../openeval` (aggregate +
+   instance sidecars). Adapters live at
+   `every_eval_ever/adapters/<name>/adapter.py` and run as
+   `uv run python -m every_eval_ever.adapters.<name>.adapter`; `__init__.py` just
+   marks the package. **Don't hand-roll the write path or the drop path** — the repo
+   owns both: publish through `converters.common.publication.publish_evaluation_logs`
+   (atomic, rollback, route-collision checks) and account for every rejected row via
+   `SourceConversionResult` + `save_failure_report` + a non-zero exit. See
+   `reference/datastore-gate.md` §publish.
 4. **Fill fields carefully** — the field traps are the whole game. Load
    `reference/fields.md` (aggregate) and `reference/instance-level.md` (jsonl).
 5. **Canonicalize ids** — model + benchmark ids must resolve in the
@@ -71,7 +81,10 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
    rides the raw source id. See `reference/registry.md`.
 6. **Verify** — `python -m every_eval_ever validate <files>` (files/glob, **not** a
    dir), an offline unit test, ruff, a live smoke run, and a **content** spot-check.
-   See `reference/verification.md`.
+   The validator's *semantic* checks (path shape, UUID4 filename, companion pairing,
+   score-in-bounds, deployment axes) only run on the CLI and only when the file sits
+   at its final `data/<collection>/<dev>/<model>/` path — that list is the merge gate,
+   enumerated in `reference/datastore-gate.md`. See `reference/verification.md`.
 7. **Ask, then log your decisions.** Two channels, don't confuse them:
    - **Ask the operator (live)** when a choice *sets policy*: **creating a new
      canonical id · dropping a non-trivial share of the data · an ambiguous metric
@@ -98,16 +111,21 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
 | `reference/instance-level.md` | Emitting `_samples.jsonl`: required fields, the `interaction_type` XOR, `sample_hash`, `answer_attribution`, the sidecar write-order |
 | `reference/gotchas.md` | Something validates but looks wrong; `inf`, double-counting, CI optional-deps, big-parquet reads |
 | `reference/registry.md` | Model/benchmark ids won't resolve; adding aliases |
+| `reference/datastore-gate.md` | What the CLI/bot enforce beyond the schema: paths, UUID4 names, companion pairing, score bounds, deployment axes, publishing |
+| `reference/datastore-submission.md` | Opening/updating the HF datastore PR: batching, the `/eee validate` bot, iterating without opening a new PR |
 | `reference/verification.md` | Before opening a PR; the checklist |
 
 ## The three PRs a contribution usually is
-1. **Adapter code** → **this repo** (`utils/<name>/adapter.py` + `__init__.py`,
-   a `README.md` (recommended), `tests/test_<name>_adapter.py`, + a row in `utils/README.md`).
+1. **Adapter code** → **this repo** (`every_eval_ever/adapters/<name>/adapter.py` +
+   `__init__.py`, a `README.md` (recommended), `tests/test_<name>_adapter.py`, + a row
+   in `every_eval_ever/adapters/README.md`). **Code only — no generated records here.**
 2. **Canonical ids** → the `eval-card-registry` repo (aliases / new canonicals) —
    see its own `CONTRIBUTING.md` and the `registry-entity-aliases` skill there.
-3. **Generated data** → the `EEE_datastore` HF dataset (`data/<name>/`, via a PR
-   with `HfApi().upload_folder(..., create_pr=True)`).
-Cross-link them.
+3. **Generated data** → the `EEE_datastore` HF dataset (`data/<collection>/`, via a PR
+   with `HfApi().upload_folder(..., create_pr=True)`) — see
+   `reference/datastore-submission.md` for batching and the review bot.
+Cross-link them. Reviewers ask for the adapter whenever data arrives without it, so
+open the code PR even when the conversion was a one-off script.
 
 Schemas are the source of truth — when a reference and the schema disagree, the
 schema wins; read `eval.schema.json` / `instance_level_eval.schema.json`.

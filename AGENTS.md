@@ -9,14 +9,17 @@ convert external eval sources into it.
 ## Skills (agent-invoked, loaded on demand)
 | Skill | Use when |
 |---|---|
-| [`eee-dataset-conversion`](.claude/skills/eee-dataset-conversion/SKILL.md) | Converting a dataset/leaderboard into EEE; writing/fixing an adapter under `utils/`; debugging why an EEE record won't validate |
+| [`eee-dataset-conversion`](.claude/skills/eee-dataset-conversion/SKILL.md) | Converting a dataset/leaderboard into EEE; writing/fixing an adapter under `every_eval_ever/adapters/`; debugging why an EEE record won't validate |
 
 ## Layout
 - `every_eval_ever/eval_types.py` + `eval.schema.json` — aggregate `EvaluationLog`.
 - `every_eval_ever/instance_level_types.py` + `instance_level_eval.schema.json` — instance log.
-- `utils/<name>/adapter.py` — one-off source adapters (run via `python -m utils.<name>.adapter`).
+- `every_eval_ever/adapters/<name>/adapter.py` — one-off source adapters (run via `uv run python -m every_eval_ever.adapters.<name>.adapter`).
 - `every_eval_ever/converters/` — in-tree converters (`inspect`/`helm`/`lm_eval`, plus `alpaca_eval`; shared code in `common`), run via `python -m every_eval_ever convert <inspect|helm|lm_eval> ...`.
-- Validate: `python -m every_eval_ever validate <dir>` (`.json`→aggregate, `.jsonl`→instance).
+- `every_eval_ever/validator/` — the schema + **semantic** merge gate (path shape, UUID4 names,
+  companion pairing, score bounds, deployment axes). `REGISTERED_CHECKS` is the list.
+- Validate: `python -m every_eval_ever validate <files-or-glob>` (`.json`→aggregate,
+  `.jsonl`→instance; directories are rejected).
 
 ## Conventions (non-negotiable)
 - **The schemas are the source of truth.** When a doc and a schema disagree, the schema wins.
@@ -25,9 +28,12 @@ convert external eval sources into it.
 - **Tests/lint**: add an offline, fixture-based `tests/test_<name>_adapter.py`, guard
   optional deps so the `core` CI matrix skips cleanly, and keep `ruff check` green —
   see the skill's `reference/verification.md` and `reference/gotchas.md` for the exact mechanics.
+- **Publish through the repo, not by hand**: `converters.common.publication.publish_evaluation_logs`
+  writes records atomically; `SourceConversionResult` + `save_failure_report` + a non-zero
+  exit account for every source row you could not convert.
 - A dataset contribution is usually three PRs (adapter here · ids in `eval-card-registry`
   · data in `EEE_datastore`) — cross-link them. See the skill's "three PRs" section.
 
 ## Human docs
-`README.md` and `utils/README.md` are for people. Keep agent instructions here and in
-`.claude/skills/`.
+`README.md` and `every_eval_ever/adapters/README.md` are for people. Keep agent
+instructions here and in `.claude/skills/`.

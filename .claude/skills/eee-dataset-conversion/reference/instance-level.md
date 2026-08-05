@@ -66,8 +66,9 @@ sub-objects, never at top level either) — route instance extras into `metadata
 
 ### Hashing (`sample_hash`)
 Optional cross-model/adapter join key — use **exactly this recipe** so hashes match
-across adapters (matches `utils/openeval`; historically the converters computed it
-inconsistently). Full `reference` list; `[]` when empty. Only meaningful once
+across adapters (matches `every_eval_ever/adapters/openeval`; historically the
+converters computed it inconsistently). Full `reference` list; `[]` when empty. Only
+meaningful once
 `input.raw` is answer-free:
 ```python
 sample_hash = hashlib.sha256(
@@ -92,16 +93,36 @@ sample_hash = hashlib.sha256(
   tool_calls, tool_call_id)]`; each `ToolCall` needs `id`+`name` and **string-only**
   `arguments`; `tool_call_id` is a **list**; set `evaluation.num_turns`/`tool_calls_count`.
 
-## Write-order (resolves the apparent chicken-and-egg)
-You need the aggregate's uuid before naming the sidecar, and the sidecar's bytes
-before checksumming it. Two writes:
-1. `path = save_evaluation_log(log, out, dev, model)` → mints `<uuid>.json`.
-2. `sidecar = path.with_name(f"{path.stem}_samples.jsonl")` → matching-uuid name;
-   write jsonl line-by-line while accumulating `hashlib.sha256()` over the exact bytes.
+## Write-order — stage, then publish (do NOT hand-roll it)
+The apparent chicken-and-egg (you need the uuid to name the sidecar, and the sidecar's
+bytes to checksum it) is solved by minting the uuid yourself **first** and letting the
+repo's publisher do the writing:
+1. `file_uuid = str(uuid.uuid4())` — you own it; the publisher rejects anything that
+   isn't a canonical UUIDv4.
+2. Write the jsonl into a **staging** dir at
+   `datastore_output_dir(staged_root, collection, model_id, developer)/<uuid>_samples.jsonl`,
+   accumulating `hashlib.sha256()` over the exact bytes you write.
 3. `log.detailed_evaluation_results = DetailedEvaluationResults(format=jsonl,
-   file_path=sidecar.name, hash_algorithm=sha256, checksum=..., total_rows=<records>)`.
-4. Re-write the aggregate: `path.write_text(log.model_dump_json(...))`.
+   file_path=datastore_repo_file_path(collection, model_id, developer,
+   f"{file_uuid}_samples.jsonl"), hash_algorithm=sha256, checksum=..., total_rows=n)`.
+4. `publish_evaluation_logs([log], base_output_dir, [file_uuid],
+   staged_output_dir=staged_root, collection_override=collection)` — from
+   `every_eval_ever.converters.common.publication`. It re-validates the log, re-reads
+   and re-checksums the staged samples, re-parses **every** line, refuses to overwrite
+   an existing file, refuses two identities that route to the same directory, and rolls
+   back everything it created if any of that fails.
 
-`detailed_evaluation_results` recipe: `checksum` = sha256 over the sidecar's whole
-raw bytes; you **must** set `hash_algorithm=sha256`; `file_path` = the **basename**;
-`total_rows` = number of records. See `templates/instance_sidecar.py`.
+`file_path` is the **full repository-relative path**
+`data/<collection>/<developer>/<model>/<uuid>_samples.jsonl` — **not** the basename.
+Build it with `helpers.datastore_repo_file_path(...)`; a basename (or any other spelling)
+is a hard error from both the publisher and `validate`'s companion check.
+
+**The collection directory comes from `evaluation_results[0].source_data.dataset_name`**
+unless you pass `collection_override`. Pass the override whenever the first result's
+dataset name isn't the collection you want (see `fields.md` §collection).
+
+What the gate then re-derives and compares (all hard errors — see
+`reference/datastore-gate.md`): every sample's `evaluation_id` **and** `model_id` equal
+the aggregate's · `total_rows` equals the real line count · at least one row · no blank
+rows · `hash_algorithm=sha256` and the checksum matches the published bytes · aggregate
+and sidecar share one uuid and one directory. See `templates/instance_sidecar.py`.

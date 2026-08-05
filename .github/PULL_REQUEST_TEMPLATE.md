@@ -4,7 +4,12 @@
 <!-- What does this change do? For an adapter: what source does it convert, and to what grain? -->
 
 ## Checklist
-- [ ] `python -m every_eval_ever validate <out>` passes (aggregate + instance)
+- [ ] `python -m every_eval_ever validate <files>` passes at the final
+      `data/<collection>/<dev>/<model>/` path — that's where the **semantic** checks run
+- [ ] no warnings either: `deployment_type`/`model_availability` set to real values,
+      every score inside its declared `[min_score, max_score]`, namespaced `metric_id`
+- [ ] records published via `save_evaluation_logs` / `publish_evaluation_logs`, and every
+      unconvertible row is in `adapter_reports/` with a non-zero exit
 - [ ] offline unit test added + full `pytest tests` green
 - [ ] `ruff check` clean
 - [ ] model/benchmark ids resolve in the registry (or an alias PR is prepared)

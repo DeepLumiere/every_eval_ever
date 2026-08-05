@@ -39,6 +39,26 @@
 - **Don't chase instance `metrics.num_turns`** — the schema's multi_turn `allOf`
   references a `metrics` property that doesn't exist; `num_turns` lives under
   `evaluation`. A top-level `metrics` object just trips `extra='forbid'`.
+- **Percent vs proportion — now a hard failure, use it.** The CLI errors when a score
+  falls outside the declared `[min_score, max_score]`, so the classic "source reports
+  `73.4`, adapter declares `0.0–1.0`" bug is caught — *if* you validate at the final path
+  with the CLI. It is **not** caught by a unit test calling `validate_file(path)` (semantic
+  checks default off there). Same for a non-finite `standard_error`/CI bound.
+- **A "successful" run that silently dropped rows.** Warn-and-continue turns a partial
+  conversion into a green exit, and a lost row can quietly shrink an aggregate's
+  denominator (1 success + 1 unparseable log → "1/1 = 100%"). Collect
+  `SourceRecordFailure`s, write the report, exit non-zero — `datastore-gate.md`
+  §partial conversions. Same class: a metric whose bounds you don't know, a model whose
+  identity you can't resolve. Preserve the valid rows, record the rest, fail the command.
+- **Re-running into a populated output dir.** `save_evaluation_log` mints a **fresh uuid**
+  every call, so a second run adds a *second* logical record for the same evaluation
+  instead of replacing it. `publish_evaluation_logs` refuses to overwrite (loud failure —
+  good); if you write by hand, clear the target dir first and run
+  `python -m every_eval_ever.check_duplicate_entries <files>` before submitting.
+- **Naive timestamps take the converter host's timezone.** A source datetime with no
+  offset run through `.timestamp()` shifts by whatever TZ the machine has, so the same
+  input converts differently on two machines — and `evaluation_id` moves with it. Attach
+  the source's real offset (or UTC) explicitly.
 - **Non-idempotent `evaluation_id`** — keying on `now`/`retrieved_timestamp` changes
   every run. Key on a stable value; for an unparseable timestamp, derive a stable
   token from the source path, never `now`. For a **remote source** (HF/API), pin the
@@ -59,6 +79,17 @@
   --locked`) and fails the moment it drifts from `pyproject.toml`, even though the
   `loose` jobs (which re-resolve) pass. A green `loose` + red `locked` almost always
   means a stale lockfile.
+  Declaring a new extra also means adding it to the **aggregate `all` extra**, or
+  `every-eval-ever[all]` silently lacks your dependency.
+- **Optional source fields that aren't dicts.** `(payload.get("methodology") or {}).get(...)`
+  still raises when `methodology` is a string or a list. Guard with
+  `isinstance(x, dict)` — malformed upstream rows are normal, not exceptional.
+- **Smoke runs write into the repo.** Default your `--output-dir` to a temp path
+  (`/tmp/<src>-smoke/data/<collection>`), not `data/<collection>` in the checkout:
+  generated records belong in the HF datastore PR, and a refresh of `data/` in the code
+  repo should be a deliberate, separate act. Give the adapter `--save-raw-json` /
+  `--input-json` so a fetched payload can be replayed offline — that's also what makes the
+  fixture-based test possible without mocking HTTP.
 - **ruff** — the repo runs `ruff check` (E/F/I). Fix import order and `;` compounds
   (use `# noqa: E402` after an `importorskip` block).
 - **Stale helpers** — `helpers.make_evaluation_log`/`make_evaluation_result` miss the
