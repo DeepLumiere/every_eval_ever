@@ -67,10 +67,10 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
    `every_eval_ever/adapters/<name>/adapter.py` and run as
    `uv run python -m every_eval_ever.adapters.<name>.adapter`; `__init__.py` just
    marks the package. **Don't hand-roll the write path or the drop path** — the repo
-   owns both: publish through `converters.common.publication.publish_evaluation_logs`
-   (atomic, rollback, route-collision checks) and account for every rejected row via
-   `SourceConversionResult` + `save_failure_report` + a non-zero exit. See
-   `reference/datastore-gate.md` §publish.
+   owns both: publish through `save_evaluation_logs` (aggregate-only) or
+   `converters.common.publication.publish_evaluation_logs` (with instance sidecars), and
+   account for every rejected row via `SourceConversionResult` + `save_failure_report` +
+   a non-zero exit. See `reference/datastore-gate.md` §publish.
 4. **Fill fields carefully** — the field traps are the whole game. Load
    `reference/fields.md` (aggregate) and `reference/instance-level.md` (jsonl).
 5. **Canonicalize ids** — model + benchmark ids must resolve in the
@@ -81,10 +81,9 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
    rides the raw source id. See `reference/registry.md`.
 6. **Verify** — `python -m every_eval_ever validate <files>` (files/glob, **not** a
    dir), an offline unit test, ruff, a live smoke run, and a **content** spot-check.
-   The validator's *semantic* checks (path shape, UUID4 filename, companion pairing,
-   score-in-bounds, deployment axes) only run on the CLI and only when the file sits
-   at its final `data/<collection>/<dev>/<model>/` path — that list is the merge gate,
-   enumerated in `reference/datastore-gate.md`. See `reference/verification.md`.
+   The validator's *semantic* checks run only on the CLI, and only when the file sits at
+   its final `data/<collection>/<dev>/<model>/` path. They are the merge gate, listed in
+   `reference/datastore-gate.md`. See `reference/verification.md`.
 7. **Ask, then log your decisions.** Two channels, don't confuse them:
    - **Ask the operator (live)** when a choice *sets policy*: **creating a new
      canonical id · dropping a non-trivial share of the data · an ambiguous metric
@@ -101,7 +100,7 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
 - **Chose / instead of** — what you did and the alternative you rejected.
 - **Confidence** — high / medium / low (low = please, maintainer, look here).
 - **General?** — `yes` (→ `skill`/`skill-gap` PR/issue) or `no` (dataset-specific).
-- **Coverage** (once per adapter) — "N source rows → N records, M dropped (reason)".
+- **Coverage** (once per adapter) — "N source rows → M records, K dropped (reason)".
   **No silent caps** — if you filtered/sampled/capped anything, say so here.
 
 ## Load a reference only when you need it (progressive disclosure)

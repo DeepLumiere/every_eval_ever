@@ -26,14 +26,10 @@ What an adapter author needs here:
   unverified — never fatal** (a converter must not die because a Space was asleep). Use
   `requests` (already a dep) so the flag is about speed, not a new dependency. Whatever
   the resolver couldn't confidently place — `created_new` drafts, low `confidence`,
-  non-`reviewed` status — goes in the decision log for a follow-up alias PR. (Older
-  adapters canonicalized offline + shipped an alias PR with no live call; that's still
-  valid, but resolve-by-default is the cleaner default.)
-- **Never key `evaluation_id` on the resolved canonical id.** Resolution is a *join
-  key* (→ `model_info.id`); a record's *identity* (`evaluation_id`) must ride the RAW
-  source identity (path/repo + eval time). The registry can re-map a freshly
-  auto-created draft later, and an `evaluation_id` that moved with it would silently
-  break re-ingest idempotency. Raw = record identity; canonical = join key.
+  non-`reviewed` status — goes in the decision log for a follow-up alias PR.
+- **Never key `evaluation_id` on the resolved canonical id** — the registry can re-map
+  a draft later. Resolved id = join key; raw source identity = record identity. Rule and
+  reasoning: `fields.md` model_info.
 - **Disambiguate look-alikes** — `arc` (AI2 Reasoning Challenge, `allenai/ai2_arc`)
   is a *different* dataset from `arc-agi` (Chollet). Confirm from the paper.
 - Adding aliases/canonicals is a **separate PR to the registry repo** (not the

@@ -3,7 +3,7 @@
 *Scope: aggregate `EvaluationLog` field semantics. Instance/jsonl fields →
 `instance-level.md`; deeper failure modes → `gotchas.md`.*
 
-Two collision clusters cause ~80% of mistakes:
+Two collision clusters cause most of the mistakes:
 - **"where from?" is three fields:** `source_metadata` (who *reported*),
   `source_data` (the *dataset*), the per-score *citation* (no typed home).
 - **"what's its name?" is three fields:** `evaluation_name` (the eval),
@@ -27,9 +27,8 @@ the leaderboard's pages/tabs/API · blog or release announcement.
   run) you're converting, wherever it lives — the operator's pointer is a starting
   point, not the boundary. But **don't mix in irrelevant data** (a different model
   variant, another metric, a superseded arXiv version, a run under other settings).
-  **Relevance** — not required-vs-optional, not effort — is the bound: you're done
-  when the relevant surfaces are covered, and optional fields get the same thorough
-  look as required ones.
+  **Relevance is the bound**, not required-vs-optional and not effort: optional fields
+  get the same look as required ones.
 - *Fill:* set a field **iff the sources you gathered actually provide it**; else
   **leave it empty** — emptiness reflects the sources, not how hard you looked. Never
   guess to fill; never skip a look because a field is "just optional."
@@ -46,14 +45,10 @@ leaderboard snapshot — none has a typed field, so it goes in the log or
 repo that actually exists, not just a name in a table.
 
 ## §shape — decide before writing code
-1. **What artifact do you hold?** — this, not who ran the compute, sets `source_type`
-   (who ran it is `evaluator_relationship`, a separate axis). Raw **per-item run
-   outputs** → `evaluation_run` — *even when a third party ran them* (WILD: Kensho ran
-   the evals and published the raw items → `evaluation_run` + `third_party`).
-   **Only-aggregate reported numbers** → `documentation` — *even though a pipeline
-   produced them* (a leaderboard/paper scrape stays `documentation`; "a run produced
-   the leaderboard" does not make your scrape an `evaluation_run`). Item-level data is
-   the strong tell for `evaluation_run`. See source_metadata.
+1. **What artifact do you hold?** — this, not who ran the compute, sets `source_type`:
+   raw per-item outputs → `evaluation_run`, only-aggregate numbers → `documentation`.
+   Item-level data is the strong tell. Full rule + the cases it decides: source_metadata
+   below.
 2. **Aggregate-only or item-level?** headline per (model, benchmark) → aggregate
    `.json` (always); per-example too → instance `_samples.jsonl` (see
    `instance-level.md`).
@@ -85,8 +80,7 @@ comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
   → `documentation` (a leaderboard scrape stays `documentation` even though a pipeline
   produced the numbers). `evaluator_relationship` separately records WHO ran it. (The
   README/schema phrase it "run locally"; that under-specifies third-party raw runs —
-  the artifact-you-hold test is what governs, and it agrees on every case in the
-  datastore.)
+  the artifact-you-hold test is what governs.)
 - `source_name` — the **platform/leaderboard**, NOT the benchmark or author.
 - `source_organization_name` — the **aggregator/publisher org**, NOT a username
   or the model developer.
@@ -186,7 +180,6 @@ comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
 - Key `evaluation_id` on a **stable** value (eval time / dataset version / raw source
   id) so reruns are idempotent. **Never key it on `now`** — and never on the
   registry-resolved canonical id either (it can move; see model_info).
-- **Leave optional fields unset rather than guess.**
 
 ## additional_details (everywhere)
 - **`dict[str, str]`** — `json.dumps` numbers/bools/objects first, or validation fails.

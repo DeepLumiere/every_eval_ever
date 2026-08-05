@@ -16,13 +16,6 @@
 - **Model deployment axes — the library hides your omission.** It auto-fills both to
   `"unknown"`, so a green *library* validate says nothing about whether you set them;
   the CLI errors. Enums and the vocabulary-skew warning: `datastore-gate.md` §deployment.
-- **`score_type` omission — the `validate` false PASS.** `fields.md` says never omit
-  it (omission fires the JSON-schema `levels` branch). Nuance: the repo's pydantic
-  `validate` **passes** an omitted `score_type`, so a green `validate` does **not**
-  prove you set it — the JSON schema is stricter. Same pydantic-vs-JSON-schema split
-  as the non-string-dict trap below. Set it explicitly regardless.
-- **Answer leakage into `input.raw`** — see `instance-level.md` (`input.raw`) for the
-  detailed rule; in short, filter the source "conversation" to input roles only.
 - **Aggregate vs parts double-counting** — emitting an overall *and* subtasks lets a
   consumer double-count. Mark the level; when a benchmark has ≤1 subtask emit **only**
   the overall.
@@ -85,7 +78,9 @@
   repo should be a deliberate, separate act. Give the adapter `--save-raw-json` /
   `--input-json` so a fetched payload can be replayed offline — that's also what makes the
   fixture-based test possible without mocking HTTP.
-- **ruff** — the repo runs `ruff check` (E/F/I). Fix import order and `;` compounds
-  (use `# noqa: E402` after an `importorskip` block).
+- **ruff is configured but not enforced by CI** — `pyproject.toml` selects E/F/I (E501
+  and E402 ignored); no workflow runs it, so nothing will tell you but a reviewer. Run
+  `ruff check` yourself; fix import order, and use `# noqa: E402` after an
+  `importorskip` block.
 - **Stale helpers** — `helpers.make_evaluation_log`/`make_evaluation_result` miss the
   now-required `eval_library`/per-result `source_data`; build the models by hand.
