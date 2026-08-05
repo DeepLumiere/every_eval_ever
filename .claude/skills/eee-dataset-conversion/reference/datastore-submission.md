@@ -1,49 +1,37 @@
 # Submitting to the `EEE_datastore` HF dataset
 
-*Scope: the mechanics of the data PR. What makes a record valid is
-`datastore-gate.md`; what a field means is `fields.md`. Everything here is drawn from
-how real submissions actually went — most rework was mechanical, not semantic.*
+**The repo `README.md` §Contributor Guide is the source of truth for the mechanics** —
+the `data/<collection>/<developer>/<model>/{uuid}.json` layout, the uuid convention, the
+`HfApi().upload_folder(..., create_pr=True)` call, adding files to an existing
+`refs/pr/<n>`, and the `/eee validate changed` bot command. Read it; don't re-derive it.
 
-## Layout: one collection per source
-- `data/<collection>/<developer>/<model>/<uuid>.json` (+ `<uuid>_samples.jsonl`).
-- **`<collection>` names the source you converted, not the benchmark being run.** An
-  adapter that emits one directory per benchmark (`data/gaia/`, `data/usaco/`) collides
-  with other sources' collections and hides which leaderboard the numbers came from. The
-  benchmark belongs in `evaluation_name` / `source_data`. Remember the collection is
-  derived from `evaluation_results[0].source_data.dataset_name` unless you pass
-  `collection_override` — set it deliberately.
-- If a source has thousands of sub-leaderboards with colliding slugs, prefix them
-  (`<owner>__<slug>`) so the namespace stays unique.
-- The **code** never goes here. Adapter code belongs in `every_eval_ever/adapters/<name>/`
-  in the GitHub repo — reviewers ask for it every time data shows up without it. Link the
-  two PRs to each other.
+*This file adds only what the README doesn't say — the things that cost real submissions
+real time. What makes a record valid is `datastore-gate.md`; what a field means is
+`fields.md`.*
 
-## Upload
-- `HfApi().upload_folder(..., repo_type="dataset", create_pr=True)`.
-- **Batch large submissions.** A single commit with thousands of files can 504 — the
-  commit may land server-side while the client errors, leaving a half-submitted PR you
-  then have to abandon. Upload in chunks (a few hundred files), and say `(n/N)` in the
-  title so reviewers know the set is incomplete until the last batch lands.
-- Generated records are **never** committed to the code repo. Point smoke runs at a temp
-  dir (`--output-dir /tmp/...`); writing into `data/` in the checkout is only for a
-  deliberate refresh.
-
-## Iterate on the SAME PR — don't open a new one
-Push new commits onto the existing PR ref (`refs/pr/<n>`). Opening a fresh PR for each
-round of bot warnings is the dominant source of churn in this datastore's history — one
-submission needed five PRs to clear a single `deployment_type` warning, another five to
-land one benchmark. Reviewers lose the thread and duplicate discussions.
-
-## The review bot
-- Comment `/eee validate changed` to (re)run validation on the PR's changed files. There
-  is a short cooldown (~a minute); repeated commands are ignored, not queued.
-- **A "Ready to Merge" verdict can still carry warnings.** Read them; the common ones are
-  missing `deployment_type` / `model_availability`, `source_type: hf_dataset` without
-  `hf_repo`, and `source_type: other` with no URL provenance. Fix them in the same PR
-  before asking for review.
-- The bot reports its own **compatibility version**. If it differs from your local
-  `SCHEMA_VERSION`, expect vocabulary skew (see `datastore-gate.md` §deployment); ask the
-  maintainers rather than downgrading records to match an older gate.
+- **Collection naming is a decision, not a formality** — see `fields.md` §collection. A
+  source with many sub-leaderboards needs collision-proof names (`<owner>__<slug>`), and
+  the collection is derived from `evaluation_results[0].source_data.dataset_name` unless
+  you pass `collection_override`.
+- **Batch large uploads.** A single commit with thousands of files can 504 — and the
+  commit may land server-side while the client errors, leaving a half-submitted PR to
+  abandon. Upload in chunks of a few hundred and put `(n/N)` in the title so reviewers
+  know the set is incomplete until the last batch lands.
+- **Iterate on the same PR ref.** The README shows how; the reason matters. Opening a
+  fresh PR per round of bot warnings is the single largest source of churn in this
+  datastore's history — one submission took five PRs to clear one `deployment_type`
+  warning — and reviewers lose the thread.
+- **A "Ready to Merge" verdict can still carry warnings.** Clear them before asking for
+  review: commonly missing `deployment_type`/`model_availability`, `hf_dataset` without
+  `hf_repo`, or `other` with no URL provenance. The bot also reports its own
+  **compatibility version**; if that differs from your local `SCHEMA_VERSION`, expect
+  vocabulary skew (`datastore-gate.md` §deployment) and ask, rather than downgrading
+  records to satisfy an older gate.
+- **Adapter code never goes in the data PR.** It belongs in
+  `every_eval_ever/adapters/<name>/` in the GitHub repo; reviewers ask for it every time
+  data arrives without it. Cross-link the two PRs.
+- **Generated records never go in the code repo.** Point smoke runs at a temp dir;
+  writing into a checkout's `data/` is only for a deliberate refresh.
 
 ## What the PR description needs
 - **Source** — the leaderboard/paper, the *dataset* the eval ran on, and a **pinned

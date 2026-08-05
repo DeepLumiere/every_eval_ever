@@ -65,10 +65,14 @@ repo that actually exists, not just a name in a table.
 Records land at `data/<collection>/<developer>/<model>/<uuid>.json`, and `<collection>`
 comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
 `collection_override` to the publisher.
-- **One collection per source**, named for the source (`data/hal/`, `data/vals-ai/`) —
-  *not* per benchmark. Emitting `data/gaia/`, `data/usaco/`, … collides with whatever
-  other source also converted those benchmarks and loses the leaderboard provenance.
-  The benchmark identity lives in `evaluation_name` and `source_data`.
+- **One collection per source you converted.** For a single-benchmark source the two
+  coincide and the benchmark name *is* the collection (`data/mmlu-pro/`, `data/hle/`).
+  For a **multi-benchmark leaderboard**, namespace the collection by the source
+  (`data/vals-ai/`, `data/hal-<benchmark>/`): fanning out into bare `data/gaia/`,
+  `data/usaco/` puts your leaderboard's numbers in the same directory as everyone
+  else's records for that benchmark and loses the provenance. (This was the
+  maintainers' resolution on the HAL adapter.) The benchmark identity always lives in
+  `evaluation_name` + `source_data` regardless.
 - With the default one-log-per-model grain, the **first** result silently decides the
   directory — so pass `collection_override` rather than relying on result ordering.
 - Collections with many sub-leaderboards need collision-proof names (`<owner>__<slug>`).
