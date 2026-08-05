@@ -13,13 +13,9 @@
   which the strict read path (#212) now **rejects**. `null` ≠ unbounded — `null` is
   "not provided" and still fails `continuous`. Give a **finite** bound only when a real
   nominal scale exists (`[0,1]`/`[0,100]`); don't invent one for an open-ended metric.
-- **Model deployment axes (every_eval_ever#212).** `model_info.additional_details`
-  must carry `deployment_type` ∈ `{self_deployed, externally_managed, unknown}` and
-  `model_availability` ∈ `{open_weights, closed_weights, unknown}`. The library
-  auto-fills both to `"unknown"`, so a green *library* `validate` does **not** mean you
-  set them — but the CLI/bot `validate` (semantic checks) **errors** on a missing key
-  or a non-enum value. Set the real value when you know it (a closed API model →
-  `externally_managed`+`closed_weights`); don't ship an unconsidered `"unknown"`.
+- **Model deployment axes — the library hides your omission.** It auto-fills both to
+  `"unknown"`, so a green *library* validate says nothing about whether you set them;
+  the CLI errors. Enums and the vocabulary-skew warning: `datastore-gate.md` §deployment.
 - **`score_type` omission — the `validate` false PASS.** `fields.md` says never omit
   it (omission fires the JSON-schema `levels` branch). Nuance: the repo's pydantic
   `validate` **passes** an omitted `score_type`, so a green `validate` does **not**
@@ -39,11 +35,10 @@
 - **Don't chase instance `metrics.num_turns`** — the schema's multi_turn `allOf`
   references a `metrics` property that doesn't exist; `num_turns` lives under
   `evaluation`. A top-level `metrics` object just trips `extra='forbid'`.
-- **Percent vs proportion — now a hard failure, use it.** The CLI errors when a score
-  falls outside the declared `[min_score, max_score]`, so the classic "source reports
-  `73.4`, adapter declares `0.0–1.0`" bug is caught — *if* you validate at the final path
-  with the CLI. It is **not** caught by a unit test calling `validate_file(path)` (semantic
-  checks default off there). Same for a non-finite `standard_error`/CI bound.
+- **The percent-vs-proportion bug is caught — but only by the CLI.** A unit test calling
+  `validate_file(path)` runs with semantic checks **off**, so it will happily pass a `73.4`
+  under `0.0–1.0` bounds that the CLI rejects. Validate at the final path with the CLI
+  (rule: `datastore-gate.md` §score).
 - **A "successful" run that silently dropped rows.** Warn-and-continue turns a partial
   conversion into a green exit, and a lost row can quietly shrink an aggregate's
   denominator (1 success + 1 unparseable log → "1/1 = 100%"). Collect

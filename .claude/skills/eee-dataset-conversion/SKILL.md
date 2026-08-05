@@ -96,7 +96,7 @@ dataset, a harness dump) and you must emit EEE records. Two artifacts:
    (would recur on other datasets) also become a separate `skill`-labeled PR or a
    `skill-gap` issue — you needn't know the fix; flagging where you guessed is enough.
 
-### Decision log (paste into the PR — the PR template has a slot)
+### Decision log (paste into the PR description)
 - **Decision / where** — the field or step (e.g. `source_data` for a DB dump).
 - **Chose / instead of** — what you did and the alternative you rejected.
 - **Confidence** — high / medium / low (low = please, maintainer, look here).
