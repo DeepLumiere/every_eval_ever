@@ -144,8 +144,18 @@ def _sample_item() -> types.SimpleNamespace:
 def _assert_gate_clean(paths: list[Path], capsys) -> None:
     """Run the real validator CLI over `paths` and require errors AND warnings empty.
 
-    Warnings count as drift: the datastore bot reports them and reviewers ask about
-    them, so records built the way the skill prescribes must produce none.
+    **Warnings are asserted on purpose — please don't relax this to errors-only.**
+    A warning means "a human should look at this". These files are not a submission;
+    they are the *exemplar* the skill tells contributors to copy, so a warning here is
+    inherited by everyone who follows the guidance, and the datastore review bot will
+    raise it on every one of their PRs. Real submissions keep the usual latitude to
+    ship with an explained warning; the thing our own docs produce does not.
+
+    So if a new warning class turns this red: update the skill (the rule in
+    `reference/datastore-gate.md`, the field in `templates/`) and regenerate the frozen
+    records. Nothing here blocks a merge — `main` has no required checks — so it is safe
+    to land your change first and fix the guidance after. Deleting the assertion is the
+    one response that loses the signal permanently.
     """
     exit_code = validate_main([str(path) for path in paths] + ['--format', 'json'])
     reports = json.loads(capsys.readouterr().out)
