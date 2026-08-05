@@ -8,32 +8,45 @@ Scope of the published leaderboard (https://lexam-benchmark.github.io/):
 * "Accuracy on Multiple-Choice Questions" — accuracy on `mcq_4_choices`
   (n=1,655) only. It is *not* pooled over the 8/16/32-choice configs.
 
-Known identity limitations, kept visible in
-`model_info.additional_details.model_id_resolution`:
+Model identity comes from the eval-card-registry; every record reports how it
+was resolved in `model_info.additional_details.model_id_resolution`.
 
-* `DeepSeek-V3.2-chat` / `DeepSeek-V3.2-reasoner` are DeepSeek API *modes*
-  rather than separately released checkpoints, so neither label maps onto one
-  canonical model; both are marked `unverified`.
-* `Llama-3.1-405B-it` and `EuroLLM-9B-it` have no eval-card-registry entry for
-  the evaluated variant; the canonical Hugging Face repo id is used
-  (`hf_canonical`).
+`DeepSeek-V3.2-chat` and `DeepSeek-V3.2-reasoner` are not two checkpoints:
+per DeepSeek's API changelog (2025-12-01) `deepseek-chat` and
+`deepseek-reasoner` are the non-thinking and thinking modes of the same
+`DeepSeek-V3.2` release, which matches the paper listing `-reasoner` under
+reasoning models and `-chat` under large (non-reasoning) models. Both rows
+therefore share `model_info.id` and are distinguished by
+`generation_config.generation_args.reasoning`.
+
+Standard errors are not on the leaderboard page; they come from the paper's
+tables and are attached only while the scraped score still equals the score
+the paper reports (see `_score_details`).
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import re
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 import requests
 
 from every_eval_ever.converters import SCHEMA_VERSION
+from every_eval_ever.converters.common.publication import (
+    publish_evaluation_logs,
+)
 from every_eval_ever.converters.common.utils import get_current_unix_timestamp
 from every_eval_ever.eval_types import (
     EvalLibrary,
     EvaluationLog,
     EvaluationResult,
     EvaluatorRelationship,
+    GenerationArgs,
+    GenerationConfig,
     JudgeConfig,
     LlmScoring,
     MetricConfig,
@@ -43,7 +56,14 @@ from every_eval_ever.eval_types import (
     SourceDataHf,
     SourceMetadata,
     SourceType,
+    StandardError,
     Uncertainty,
+)
+from every_eval_ever.helpers.io import (
+    SourceConversionResult,
+    SourceRecordFailure,
+    default_failure_report_path,
+    save_failure_report,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,7 +76,17 @@ LEADERBOARD_PAGE_URL = 'https://lexam-benchmark.github.io/'
 HF_REPO = 'LEXam-Benchmark/LEXam'
 GITHUB_REPO_URL = 'https://github.com/LEXam-Benchmark/LEXam'
 PAPER_URL = 'https://arxiv.org/abs/2505.12864'
+PAPER_TABLE_CITATION = (
+    'arXiv:2505.12864v7 (ICLR 2026), Table 1 (open questions) and Table 10 '
+    '(MCQ-4), bootstrapped standard error'
+)
+DEEPSEEK_MODE_CITATION = (
+    'https://api-docs.deepseek.com/updates (2025-12-01): deepseek-chat and '
+    'deepseek-reasoner are the non-thinking and thinking modes of '
+    'DeepSeek-V3.2'
+)
 BENCHMARK_KEY = 'lexam'
+DEFAULT_OUTPUT_DIR = 'data'
 
 # Open questions: the leaderboard scores the `open_question` *test* split
 # (paper appendix B.2: test 2,541 / dev 300).
@@ -144,245 +174,313 @@ class LeaderboardRow:
 
 @dataclass(frozen=True)
 class ModelIdentity:
-    """Model identity for a LEXam leaderboard label.
+    """Identity for one LEXam leaderboard label.
 
-    `model_id` is the join key written to `model_info.id`. `id_source` records
-    how it was obtained so consumers can tell a registry-backed id from a
-    best-effort one:
+    `model_id` is the join key written to `model_info.id`. The
+    eval-card-registry is the authority; `id_source` records how the id was
+    obtained so a consumer can tell a registry-backed id from a gap-filling
+    one:
 
-    * `registry_alias` — a confirmed eval-card-registry alias maps the
-      leaderboard label to this canonical id.
+    * `registry_alias` — a confirmed registry alias maps this leaderboard
+      label to this canonical id.
     * `registry_canonical` — the label matches an existing reviewed canonical
-      id one-to-one; the alias itself is not registered yet.
-    * `hf_canonical` — the registry has no entry for the evaluated variant;
-      the id is the canonical Hugging Face repo id.
-    * `unverified` — the leaderboard label does not identify a single released
-      variant (see the module docstring notes); kept as published.
+      one-to-one, but the alias is not registered yet.
+    * `hf_canonical` — the registry has no canonical for the evaluated
+      checkpoint (only an API-catalog draft, a base model, or nothing), so the
+      canonical Hugging Face repo id is used. `registry_canonical_id` carries
+      the draft the registry currently returns, when one exists.
+
+    `developer_org_id` is the registry's normalized company org, which differs
+    from the id prefix whenever the id is a Hugging Face repo id (for example
+    `Qwen/Qwen3-32B` under org `alibaba`). It is recorded in
+    `model_info.additional_details` because the datastore path is derived from
+    the id prefix, not from this field.
     """
 
-    developer: str
     model_id: str
+    developer_org_id: str
     availability: str
     id_source: str
+    registry_canonical_id: str | None = None
+    reasoning: bool | None = None
+    api_model_name: str | None = None
+    note: str | None = None
+
+    @property
+    def developer(self) -> str:
+        """Developer as it appears in the id, matching the datastore path."""
+        return self.model_id.split('/')[0]
 
 
 _MODEL_IDENTITIES = {
     'Apertus-70B': ModelIdentity(
-        developer='swiss-ai-initiative',
         model_id='swiss-ai-initiative/apertus-70b',
+        developer_org_id='swiss-ai-initiative',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'Apertus-8B': ModelIdentity(
-        developer='swiss-ai-initiative',
         model_id='swiss-ai-initiative/apertus-8b',
+        developer_org_id='swiss-ai-initiative',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'Claude-3.7-Sonnet': ModelIdentity(
-        developer='anthropic',
         model_id='anthropic/Claude-3.7-Sonnet',
+        developer_org_id='anthropic',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'Claude-4.5-Sonnet': ModelIdentity(
-        developer='anthropic',
         model_id='anthropic/claude-sonnet-4.5',
+        developer_org_id='anthropic',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'DeepSeek-R1': ModelIdentity(
-        developer='deepseek-ai',
         model_id='deepseek-ai/DeepSeek-R1',
+        developer_org_id='deepseek',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'DeepSeek-V3': ModelIdentity(
-        developer='deepseek-ai',
         model_id='deepseek-ai/DeepSeek-V3',
+        developer_org_id='deepseek',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'DeepSeek-V3.2-Exp': ModelIdentity(
-        developer='deepseek',
-        model_id='deepseek/deepseek-v3-2-exp',
-        availability='open_weights',
-        id_source='registry_alias',
-    ),
-    'DeepSeek-V3.2-chat': ModelIdentity(
-        developer='deepseek-ai',
-        model_id='deepseek-ai/DeepSeek-V3.2-chat',
-        availability='open_weights',
-        id_source='unverified',
-    ),
-    'DeepSeek-V3.2-reasoner': ModelIdentity(
-        developer='deepseek-ai',
-        model_id='deepseek-ai/DeepSeek-V3.2-reasoner',
-        availability='open_weights',
-        id_source='unverified',
-    ),
-    'EuroLLM-9B-it': ModelIdentity(
-        developer='utter-project',
-        model_id='utter-project/EuroLLM-9B-Instruct',
+        model_id='deepseek-ai/DeepSeek-V3.2-Exp',
+        developer_org_id='deepseek',
         availability='open_weights',
         id_source='hf_canonical',
+        registry_canonical_id='deepseek/deepseek-v3-2-exp',
+        note='registry has only an API-catalog draft for this checkpoint',
+    ),
+    'DeepSeek-V3.2-chat': ModelIdentity(
+        model_id='deepseek-ai/DeepSeek-V3.2',
+        developer_org_id='deepseek',
+        availability='open_weights',
+        id_source='registry_alias',
+        reasoning=False,
+        api_model_name='deepseek-chat',
+        note='deepseek-chat API endpoint = V3.2 non-thinking mode',
+    ),
+    'DeepSeek-V3.2-reasoner': ModelIdentity(
+        model_id='deepseek-ai/DeepSeek-V3.2',
+        developer_org_id='deepseek',
+        availability='open_weights',
+        id_source='registry_alias',
+        reasoning=True,
+        api_model_name='deepseek-reasoner',
+        note='deepseek-reasoner API endpoint = V3.2 thinking mode',
+    ),
+    'EuroLLM-9B-it': ModelIdentity(
+        model_id='utter-project/EuroLLM-9B-Instruct',
+        developer_org_id='utter-project',
+        availability='open_weights',
+        id_source='hf_canonical',
+        note='registry holds only the base EuroLLM-9B',
     ),
     'GPT-4.1': ModelIdentity(
-        developer='openai',
         model_id='openai/gpt-4.1',
+        developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'GPT-4.1-mini': ModelIdentity(
-        developer='openai',
         model_id='openai/gpt-4.1-mini',
+        developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'GPT-4.1-nano': ModelIdentity(
-        developer='openai',
         model_id='openai/gpt-4.1-nano',
+        developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'GPT-4o': ModelIdentity(
-        developer='openai',
         model_id='openai/gpt-4o',
+        developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'GPT-4o-mini': ModelIdentity(
-        developer='openai',
         model_id='openai/gpt-4o-mini',
+        developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'GPT-5': ModelIdentity(
-        developer='openai',
         model_id='openai/gpt-5',
+        developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'GPT-5-mini': ModelIdentity(
-        developer='openai',
         model_id='openai/gpt-5-mini',
+        developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'GPT-5-nano': ModelIdentity(
-        developer='openai',
         model_id='openai/gpt-5-nano',
+        developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'GPT-OSS-120B': ModelIdentity(
-        developer='openai',
         model_id='openai/gpt-oss-120b',
+        developer_org_id='openai',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'GPT-OSS-20B': ModelIdentity(
-        developer='openai',
         model_id='openai/gpt-oss-20b',
+        developer_org_id='openai',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'Gemini-2.5-Pro': ModelIdentity(
-        developer='google',
         model_id='google/gemini-2.5-pro',
+        developer_org_id='google',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'Gemini-3-Pro-preview': ModelIdentity(
-        developer='google',
         model_id='google/gemini-3-pro-preview',
+        developer_org_id='google',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'Gemma-2-9B-it': ModelIdentity(
-        developer='google',
         model_id='google/gemma-2-9b-it',
+        developer_org_id='google',
         availability='open_weights',
         id_source='registry_canonical',
+        note='label is the instruct variant; the alias resolves to the base model',
     ),
     'Gemma-3-12B-it': ModelIdentity(
-        developer='google',
         model_id='google/gemma-3-12b-it',
+        developer_org_id='google',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'Llama-3.1-405B-it': ModelIdentity(
-        developer='meta-llama',
         model_id='meta-llama/Llama-3.1-405B-Instruct',
+        developer_org_id='meta',
         availability='open_weights',
         id_source='hf_canonical',
+        note='registry holds only Together "Turbo" drafts',
     ),
     'Llama-3.1-8B-it': ModelIdentity(
-        developer='meta-llama',
         model_id='meta-llama/Llama-3.1-8B-Instruct',
+        developer_org_id='meta',
         availability='open_weights',
         id_source='registry_canonical',
     ),
     'Llama-3.3-70B-it': ModelIdentity(
-        developer='meta-llama',
         model_id='meta-llama/Llama-3.3-70B-Instruct',
+        developer_org_id='meta',
         availability='open_weights',
         id_source='registry_canonical',
     ),
     'Llama-4-Maverick': ModelIdentity(
-        developer='meta-llama',
         model_id='meta-llama/Llama-4-Maverick-17B-128E',
+        developer_org_id='meta',
         availability='open_weights',
         id_source='registry_alias',
+        note='leaderboard label does not state the Instruct/FP8 variant',
     ),
     'Ministral-8B-it': ModelIdentity(
-        developer='mistralai',
         model_id='mistralai/ministral-8b-it',
+        developer_org_id='mistralai',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'O3-mini': ModelIdentity(
-        developer='openai',
         model_id='openai/o3-mini',
+        developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
     ),
     'Phi-4': ModelIdentity(
-        developer='microsoft',
         model_id='microsoft/phi-4',
+        developer_org_id='microsoft',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'QwQ-32B': ModelIdentity(
-        developer='Qwen',
         model_id='Qwen/QwQ-32B',
+        developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'Qwen-2.5-7B-it': ModelIdentity(
-        developer='Qwen',
         model_id='Qwen/Qwen2.5-7B-Instruct',
+        developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_canonical',
     ),
     'Qwen3-235B': ModelIdentity(
-        developer='Qwen',
         model_id='Qwen/Qwen3-235B-A22B',
+        developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'Qwen3-32B': ModelIdentity(
-        developer='Qwen',
         model_id='Qwen/Qwen3-32B',
+        developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_alias',
     ),
     'Qwen3-Next': ModelIdentity(
-        developer='alibaba',
         model_id='alibaba/qwen3-next',
+        developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_alias',
+        note='registry id is variant-agnostic; HF publishes Instruct and Thinking variants',
     ),
+}
+
+_PAPER_UNCERTAINTY = {
+    'Apertus-70B': {'open': (34.7, 0.39)},
+    'Apertus-8B': {'open': (22.44, 0.41)},
+    'Claude-3.7-Sonnet': {'open': (62.86, 0.51), 'mcq': (57.23, 1.21)},
+    'Claude-4.5-Sonnet': {'open': (62.76, 0.43), 'mcq': (58.01, 1.17)},
+    'DeepSeek-R1': {'open': (55.91, 0.51), 'mcq': (52.41, 1.22)},
+    'DeepSeek-V3': {'open': (52.53, 0.48), 'mcq': (46.57, 1.28)},
+    'DeepSeek-V3.2-Exp': {'open': (57.42, 0.45), 'mcq': (53.07, 1.22)},
+    'DeepSeek-V3.2-chat': {'open': (55.99, 0.45)},
+    'DeepSeek-V3.2-reasoner': {'open': (56.53, 0.45)},
+    'EuroLLM-9B-it': {'open': (22.95, 0.35)},
+    'GPT-4.1': {'open': (57.5, 0.51), 'mcq': (54.4, 1.26)},
+    'GPT-4.1-mini': {'open': (54.58, 0.43), 'mcq': (48.49, 1.22)},
+    'GPT-4.1-nano': {'open': (43.68, 0.41), 'mcq': (39.22, 1.22)},
+    'GPT-4o': {'open': (56.93, 0.48), 'mcq': (53.13, 1.2)},
+    'GPT-4o-mini': {'open': (42.55, 0.39), 'mcq': (40.96, 1.21)},
+    'GPT-5': {'open': (70.2, 0.41), 'mcq': (62.65, 1.17)},
+    'GPT-5-mini': {'open': (60.32, 0.45), 'mcq': (54.82, 1.19)},
+    'GPT-5-nano': {'open': (27.25, 0.63), 'mcq': (47.11, 1.19)},
+    'GPT-OSS-120B': {'open': (51.74, 0.46), 'mcq': (47.71, 1.21)},
+    'GPT-OSS-20B': {'open': (32.12, 0.37), 'mcq': (40.78, 1.23)},
+    'Gemini-2.5-Pro': {'open': (67.4, 0.51), 'mcq': (55.72, 1.18)},
+    'Gemini-3-Pro-preview': {'open': (55.38, 0.64)},
+    'Gemma-2-9B-it': {'open': (27.41, 0.37), 'mcq': (25.36, 1.04)},
+    'Gemma-3-12B-it': {'open': (41.29, 0.48), 'mcq': (29.94, 1.1)},
+    'Llama-3.1-405B-it': {'open': (43.14, 0.41), 'mcq': (43.19, 1.19)},
+    'Llama-3.1-8B-it': {'open': (10.0, 0.26), 'mcq': (24.04, 1.05)},
+    'Llama-3.3-70B-it': {'open': (41.27, 0.41), 'mcq': (28.19, 1.1)},
+    'Llama-4-Maverick': {'open': (47.25, 0.46), 'mcq': (49.1, 1.24)},
+    'Ministral-8B-it': {'open': (14.88, 0.32), 'mcq': (26.27, 1.12)},
+    'O3-mini': {'open': (48.13, 0.49), 'mcq': (44.22, 1.23)},
+    'Phi-4': {'open': (38.54, 0.42), 'mcq': (40.66, 1.19)},
+    'QwQ-32B': {'open': (44.36, 0.53), 'mcq': (47.83, 1.23)},
+    'Qwen-2.5-7B-it': {'open': (16.67, 0.29), 'mcq': (29.28, 1.1)},
+    'Qwen3-235B': {'open': (47.25, 0.46), 'mcq': (48.19, 1.2)},
+    'Qwen3-32B': {'open': (40.0, 0.43), 'mcq': (45.3, 1.23)},
+    'Qwen3-Next': {'open': (43.37, 0.48), 'mcq': (43.31, 1.21)},
 }
 
 
@@ -551,7 +649,40 @@ def _open_question_judge_scoring() -> LlmScoring:
     )
 
 
-def _build_open_question_result(score: float) -> EvaluationResult:
+def _score_details(score: float, label: str, section: str) -> ScoreDetails:
+    """Score plus the paper's bootstrapped standard error when it still applies.
+
+    The leaderboard HTML publishes no uncertainty, so the standard error comes
+    from the paper's Table 1 / Table 10. It is attached only when the scraped
+    score still equals the score the paper reports for that model, so a
+    leaderboard update drops the standard error instead of pairing it with a
+    number it was never computed for.
+    """
+    score = round(score, 2)
+    samples = (
+        OPEN_QUESTIONS_SAMPLES if section == 'open' else MCQ_SAMPLES
+    )
+    published = _PAPER_UNCERTAINTY.get(label, {}).get(section)
+    if published is None or published[0] != score:
+        return ScoreDetails(
+            score=score,
+            uncertainty=Uncertainty(num_samples=samples),
+        )
+    return ScoreDetails(
+        score=score,
+        uncertainty=Uncertainty(
+            standard_error=StandardError(
+                value=published[1], method='bootstrap'
+            ),
+            num_samples=samples,
+        ),
+        details={'standard_error_source': PAPER_TABLE_CITATION},
+    )
+
+
+def _build_open_question_result(
+    score: float, label: str, identity: ModelIdentity
+) -> EvaluationResult:
     return EvaluationResult(
         evaluation_name=f'{BENCHMARK_KEY}.{OPEN_QUESTION_CONFIG}',
         metric_config=MetricConfig(
@@ -571,15 +702,15 @@ def _build_open_question_result(score: float) -> EvaluationResult:
             max_score=100.0,
             llm_scoring=_open_question_judge_scoring(),
         ),
-        score_details=ScoreDetails(
-            score=round(score, 2),
-            uncertainty=Uncertainty(num_samples=OPEN_QUESTIONS_SAMPLES),
-        ),
+        score_details=_score_details(score, label, 'open'),
         source_data=_open_question_source(),
+        generation_config=_generation_config(identity),
     )
 
 
-def _build_mcq_result(score: float) -> EvaluationResult:
+def _build_mcq_result(
+    score: float, label: str, identity: ModelIdentity
+) -> EvaluationResult:
     return EvaluationResult(
         evaluation_name=f'{BENCHMARK_KEY}.{MCQ_CONFIG}',
         metric_config=MetricConfig(
@@ -598,11 +729,42 @@ def _build_mcq_result(score: float) -> EvaluationResult:
             min_score=0.0,
             max_score=100.0,
         ),
-        score_details=ScoreDetails(
-            score=round(score, 2),
-            uncertainty=Uncertainty(num_samples=MCQ_SAMPLES),
-        ),
+        score_details=_score_details(score, label, 'mcq'),
         source_data=_mcq_source(),
+        generation_config=_generation_config(identity),
+    )
+
+
+def _model_details(identity: ModelIdentity, label: str) -> dict[str, str]:
+    """Model provenance, including how the id was resolved."""
+    details = {
+        # LEXam documents both API-served (litellm) and local vLLM evaluation
+        # paths without stating which produced each leaderboard row.
+        'deployment_type': 'unknown',
+        'model_availability': identity.availability,
+        'model_id_resolution': identity.id_source,
+        'developer_org_id': identity.developer_org_id,
+        'leaderboard_label': label,
+    }
+    if identity.registry_canonical_id is not None:
+        details['registry_canonical_id'] = identity.registry_canonical_id
+    if identity.api_model_name is not None:
+        details['api_model_name'] = identity.api_model_name
+        details['api_mode_source'] = DEEPSEEK_MODE_CITATION
+    if identity.note is not None:
+        details['model_id_note'] = identity.note
+    return details
+
+
+def _generation_config(identity: ModelIdentity) -> GenerationConfig | None:
+    """Only set what the source states: the two DeepSeek API modes."""
+    if identity.reasoning is None:
+        return None
+    return GenerationConfig(
+        generation_args=GenerationArgs(reasoning=identity.reasoning),
+        additional_details={
+            'reasoning_source': DEEPSEEK_MODE_CITATION,
+        },
     )
 
 
@@ -613,12 +775,14 @@ class LEXamAdapter:
         self,
         html: str | None = None,
         url: str = LEADERBOARD_URL,
+        only: str | None = None,
     ) -> list[EvaluationLog]:
         """Fetch the LEXam leaderboard and return one log per model.
 
         Args:
             html: Optional pre-fetched HTML (used in tests).
             url: Leaderboard HTML URL when *html* is not provided.
+            only: Convert just this leaderboard label, when given.
 
         Returns:
             One EvaluationLog per model, combining open and MCQ metrics when
@@ -631,24 +795,29 @@ class LEXamAdapter:
         open_scores = {row.model_name: row.score for row in open_rows}
         mcq_scores = {row.model_name: row.score for row in mcq_rows}
         model_names = sorted(set(open_scores) | set(mcq_scores))
+        if only is not None:
+            model_names = [name for name in model_names if name == only]
 
         retrieved_ts = get_current_unix_timestamp()
         logs: list[EvaluationLog] = []
 
         for model_name in model_names:
+            identity = _model_identity(model_name)
             evaluation_results: list[EvaluationResult] = []
             if model_name in open_scores:
                 evaluation_results.append(
-                    _build_open_question_result(open_scores[model_name])
+                    _build_open_question_result(
+                        open_scores[model_name], model_name, identity
+                    )
                 )
             if model_name in mcq_scores:
                 evaluation_results.append(
-                    _build_mcq_result(mcq_scores[model_name])
+                    _build_mcq_result(
+                        mcq_scores[model_name], model_name, identity
+                    )
                 )
             if not evaluation_results:
                 continue
-
-            identity = _model_identity(model_name)
 
             logs.append(
                 EvaluationLog(
@@ -694,15 +863,9 @@ class LEXamAdapter:
                         name=model_name,
                         id=identity.model_id,
                         developer=identity.developer,
-                        additional_details={
-                            # LEXam documents both API-served (litellm) and
-                            # local vLLM evaluation paths without saying which
-                            # produced each leaderboard row.
-                            'deployment_type': 'unknown',
-                            'model_availability': identity.availability,
-                            'model_id_resolution': identity.id_source,
-                            'leaderboard_label': model_name,
-                        },
+                        additional_details=_model_details(
+                            identity, model_name
+                        ),
                     ),
                     evaluation_results=evaluation_results,
                 )
@@ -710,3 +873,115 @@ class LEXamAdapter:
 
         logger.info('Converted %d LEXam leaderboard model(s).', len(logs))
         return logs
+
+    def fetch_leaderboard_result(
+        self,
+        html: str | None = None,
+        url: str = LEADERBOARD_URL,
+    ) -> SourceConversionResult[EvaluationLog]:
+        """Convert the leaderboard, recording unmapped rows as failures.
+
+        A leaderboard label with no identity mapping is reported rather than
+        aborting the run, so the remaining models are still written and the
+        gap shows up in the provenance report. `raise_if_incomplete` still
+        fails the command afterwards.
+        """
+        page_html = html if html is not None else _fetch_html(url)
+        open_rows = _extract_section_rows(page_html, OPEN_SECTION_TITLE)
+        mcq_rows = _extract_section_rows(page_html, MCQ_SECTION_TITLE)
+        labels = sorted(
+            {row.model_name for row in open_rows}
+            | {row.model_name for row in mcq_rows}
+        )
+
+        records: list[EvaluationLog] = []
+        failures: list[SourceRecordFailure] = []
+        for label in labels:
+            try:
+                records.extend(
+                    self.fetch_leaderboard(html=page_html, url=url, only=label)
+                )
+            except ValueError as exc:
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=f'LEXam leaderboard row {label!r}',
+                        reason=str(exc),
+                        source_record={'model_name': label},
+                    )
+                )
+
+        return SourceConversionResult(
+            source_name='LEXam Leaderboard',
+            total_records=len(labels),
+            records=records,
+            failures=failures,
+        )
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            'Convert the LEXam public leaderboard to Every Eval Ever records.'
+        ),
+    )
+    parser.add_argument(
+        '--input-html',
+        type=Path,
+        help=(
+            'Read leaderboard HTML from a file instead of fetching it live '
+            '(useful for offline smoke runs).'
+        ),
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=Path,
+        default=Path(DEFAULT_OUTPUT_DIR),
+        help=f'Output directory (default: {DEFAULT_OUTPUT_DIR}).',
+    )
+    parser.add_argument(
+        '--source-url',
+        default=LEADERBOARD_URL,
+        help=f'Leaderboard HTML URL (default: {LEADERBOARD_URL}).',
+    )
+    parser.add_argument(
+        '--failure-report',
+        type=Path,
+        help='Where to write the provenance report when rows are rejected.',
+    )
+    return parser.parse_args(argv)
+
+
+def export(
+    logs: list[EvaluationLog], output_dir: Path | str
+) -> list[Path]:
+    return publish_evaluation_logs(
+        logs, output_dir, [str(uuid.uuid4()) for _ in logs]
+    )
+
+
+def run(args: argparse.Namespace) -> int:
+    html = (
+        args.input_html.read_text(encoding='utf-8')
+        if args.input_html is not None
+        else None
+    )
+    result = LEXamAdapter().fetch_leaderboard_result(
+        html=html, url=args.source_url
+    )
+    paths = export(result.records, args.output_dir)
+    for path in paths:
+        print(path)
+    if result.failures:
+        report_path = save_failure_report(
+            result,
+            args.failure_report
+            or default_failure_report_path(args.output_dir),
+        )
+        print(f'Failure report: {report_path}')
+        result.raise_if_incomplete()
+    return len(paths)
+
+
+if __name__ == '__main__':
+    written = run(parse_args())
+    print(f'Wrote {written} LEXam model log(s).')

@@ -1,5 +1,5 @@
 ## Automatic Evaluation Log Converters
-A collection of scripts to convert evaluation logs from local evaluation frameworks (e.g., `Inspect AI` and `lm-eval-harness`) and public leaderboards (e.g., AlpacaEval and LEXam) into the unified Every Eval Ever schema.
+A collection of scripts to convert evaluation logs from local evaluation frameworks (e.g., `Inspect AI` and `lm-eval-harness`) and public leaderboards (e.g., AlpacaEval) into the unified Every Eval Ever schema.
 
 ### Installation
 
@@ -272,52 +272,5 @@ usage: every_eval_ever convert alpaca_eval [-h] [--log_path LOG_PATH]
 
 options:
   --version {v1,v2}            Which leaderboard to convert. Omit to convert both (default).
-  --output_dir OUTPUT_DIR      Base output directory (default: data).
-```
-
-## LEXam
-
-The LEXam converter fetches the public leaderboard HTML from the LEXam project
-website repository and converts all model entries into the unified schema.
-No local log files are required.
-
-Metrics converted per model, scoped to what the leaderboard actually publishes:
-
-| Metric | Evaluation | Description |
-|---|---|---|
-| Open Question Judge Score | `lexam.open_question` | Mean LLM-judge score over the `open_question` **test** split (n=2,541), graded by a pointwise-minimum ensemble of GPT-4o, DeepSeek-V3 and Qwen3-32B with human expert validation (0-100) |
-| Multiple-Choice Accuracy | `lexam.mcq_4_choices` | Accuracy on the four-choice MCQ config `mcq_4_choices` (n=1,655) — the leaderboard column reproduces the paper's MCQ-4 table and does **not** pool the 8/16/32-choice configs (0-100) |
-
-Notes on provenance:
-
-- `eval_library` names the harness (`lighteval`, version unknown), not the
-  benchmark; the benchmark is recorded in `eval_library.additional_details`.
-- `evaluator_relationship` is `third_party`: LEXam-Benchmark scores models it
-  did not develop.
-- The judge ensemble aggregates the **pointwise minimum** of three judges. The
-  schema's `AggregationMethod` enum cannot express that, so no typed value is
-  set and the method is recorded in `llm_scoring.additional_details`.
-- `model_info.id` is resolved against the eval-card-registry; every record
-  reports how it was resolved in
-  `model_info.additional_details.model_id_resolution`
-  (`registry_alias` / `registry_canonical` / `hf_canonical` / `unverified`).
-
-### Usage
-
-```bash
-uv run every_eval_ever convert lexam --output_dir data
-```
-
-Full argument list:
-
-```
-usage: every_eval_ever convert lexam [-h] [--output_dir OUTPUT_DIR]
-                                     [--source_organization_name ...]
-                                     [--evaluator_relationship ...]
-                                     [--source_organization_url ...]
-                                     [--eval_library_name ...]
-                                     [--eval_library_version ...]
-
-options:
   --output_dir OUTPUT_DIR      Base output directory (default: data).
 ```

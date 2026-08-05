@@ -369,47 +369,6 @@ def _cmd_convert_helm(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_convert_lexam(args: argparse.Namespace) -> int:
-    from every_eval_ever.converters.lexam.adapter import LEXamAdapter
-
-    adapter = LEXamAdapter()
-    output_dir = Path(args.output_dir)
-    logs = adapter.fetch_leaderboard()
-
-    for log in logs:
-        if args.source_organization_name != 'unknown':
-            log.source_metadata.source_organization_name = (
-                args.source_organization_name
-            )
-        if args.source_organization_url is not None:
-            log.source_metadata.source_organization_url = (
-                args.source_organization_url
-            )
-        if args.source_organization_logo_url is not None:
-            log.source_metadata.source_organization_logo_url = (
-                args.source_organization_logo_url
-            )
-        if args.evaluator_relationship != 'third_party':
-            from every_eval_ever.eval_types import EvaluatorRelationship
-
-            log.source_metadata.evaluator_relationship = EvaluatorRelationship(
-                args.evaluator_relationship
-            )
-        if args.eval_library_name != 'lighteval':
-            log.eval_library.name = args.eval_library_name
-        if args.eval_library_version != 'unknown':
-            log.eval_library.version = args.eval_library_version
-
-    paths = publish_evaluation_logs(
-        logs, output_dir, [str(uuid.uuid4()) for _ in logs]
-    )
-    for path in paths:
-        print(f'  {path}')
-
-    print(f'\nConverted {len(paths)} model evaluation(s).')
-    return 0
-
-
 def _cmd_convert_alpaca_eval(args: argparse.Namespace) -> int:
     from every_eval_ever.converters.alpaca_eval.adapter import (
         LEADERBOARDS,
@@ -576,7 +535,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest='source', required=True
     )
 
-    for source in ['lm_eval', 'inspect', 'helm', 'alpaca_eval', 'lexam']:
+    for source in ['lm_eval', 'inspect', 'helm', 'alpaca_eval']:
         source_parser = convert_subparsers.add_parser(
             source,
             help=f'Convert {source} logs',
@@ -585,7 +544,7 @@ def build_parser() -> argparse.ArgumentParser:
         source_parser.add_argument(
             '--log_path',
             '--log-path',
-            required=(source not in {'alpaca_eval', 'lexam'}),
+            required=(source != 'alpaca_eval'),
             help='Path to source log file or directory to convert.',
         )
         source_parser.add_argument(
@@ -708,8 +667,6 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_convert_helm(args)
         if args.source == 'alpaca_eval':
             return _cmd_convert_alpaca_eval(args)
-        if args.source == 'lexam':
-            return _cmd_convert_lexam(args)
 
     parser.print_help()
     return 1

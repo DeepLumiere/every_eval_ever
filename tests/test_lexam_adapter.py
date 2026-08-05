@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from every_eval_ever.converters.lexam.adapter import (
+from every_eval_ever.adapters.lexam.adapter import (
     _MODEL_IDENTITIES,
     MCQ_CONFIG,
     MCQ_SAMPLES,
@@ -179,6 +179,7 @@ def test_model_identities_are_resolved_not_invented() -> None:
     details = gpt5.model_info.additional_details
     assert details['model_id_resolution'] == 'registry_alias'
     assert details['model_availability'] == 'closed_weights'
+    assert details['developer_org_id'] == 'openai'
     assert details['leaderboard_label'] == 'GPT-5'
 
 
@@ -187,14 +188,75 @@ def test_every_identity_declares_availability_and_id_provenance() -> None:
         'registry_alias',
         'registry_canonical',
         'hf_canonical',
-        'unverified',
     }
     for label, identity in _MODEL_IDENTITIES.items():
         assert identity.availability in {'open_weights', 'closed_weights'}, label
         assert identity.id_source in allowed_sources, label
         assert identity.model_id.startswith(f'{identity.developer}/'), label
+        assert identity.developer_org_id, label
         # No leaderboard display label leaks into an id as-is.
         assert identity.model_id != label
+
+
+def test_deepseek_api_modes_share_one_model_id() -> None:
+    chat = _MODEL_IDENTITIES['DeepSeek-V3.2-chat']
+    reasoner = _MODEL_IDENTITIES['DeepSeek-V3.2-reasoner']
+
+    assert chat.model_id == reasoner.model_id == 'deepseek-ai/DeepSeek-V3.2'
+    assert chat.reasoning is False
+    assert reasoner.reasoning is True
+    assert chat.api_model_name == 'deepseek-chat'
+    assert reasoner.api_model_name == 'deepseek-reasoner'
+    # The experimental release is a different checkpoint.
+    assert (
+        _MODEL_IDENTITIES['DeepSeek-V3.2-Exp'].model_id
+        == 'deepseek-ai/DeepSeek-V3.2-Exp'
+    )
+
+
+def test_reasoning_is_only_set_where_the_source_states_the_mode() -> None:
+    with_reasoning = {
+        label
+        for label, identity in _MODEL_IDENTITIES.items()
+        if identity.reasoning is not None
+    }
+    assert with_reasoning == {
+        'DeepSeek-V3.2-chat',
+        'DeepSeek-V3.2-reasoner',
+    }
+
+
+def test_standard_error_attached_only_when_score_still_matches() -> None:
+    results = _gpt5_results()
+    open_uncertainty = results[OPEN_EVAL_NAME].score_details.uncertainty
+    assert open_uncertainty.standard_error.value == 0.41
+    assert open_uncertainty.standard_error.method == 'bootstrap'
+    assert open_uncertainty.num_samples == OPEN_QUESTIONS_SAMPLES
+    assert 'arXiv' in results[OPEN_EVAL_NAME].score_details.details[
+        'standard_error_source'
+    ]
+
+    # A score the paper never reported gets no standard error.
+    moved = FIXTURE_HTML.replace('<strong>70.20</strong>', '<strong>70.21</strong>')
+    logs = LEXamAdapter().fetch_leaderboard(html=moved)
+    gpt5 = next(log for log in logs if log.model_info.name == 'GPT-5')
+    open_result = next(
+        r for r in gpt5.evaluation_results if r.evaluation_name == OPEN_EVAL_NAME
+    )
+    assert open_result.score_details.score == 70.21
+    assert open_result.score_details.uncertainty.standard_error is None
+    assert open_result.score_details.details is None
+
+
+def test_unmapped_row_is_reported_not_fatal() -> None:
+    broken = FIXTURE_HTML.replace('Phi-4', 'Totally-New-Model')
+    result = LEXamAdapter().fetch_leaderboard_result(html=broken)
+
+    assert len(result.records) == 3
+    assert len(result.failures) == 1
+    assert 'Totally-New-Model' in result.failures[0].source_ref
+    with pytest.raises(Exception, match='conversion issue'):
+        result.raise_if_incomplete()
 
 
 def test_evaluation_id_is_keyed_on_the_raw_leaderboard_label() -> None:

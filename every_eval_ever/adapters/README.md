@@ -26,6 +26,7 @@ Each adapter is run with `uv run python -m every_eval_ever.adapters.<name>.adapt
 | `terminal_bench_2` | tbench.ai | Fetches Terminal-Bench 2.0 agentic coding benchmark results. |
 | `hle` | Scale SEAL leaderboard | Converts the Scale SEAL Humanity's Last Exam leaderboard into `data/hle/`. Emits per-model accuracy (with 95% CI) and calibration error. |
 | `mmlu_pro` | TIGER-Lab leaderboard CSV | Converts the MMLU-Pro leaderboard (`TIGER-Lab/mmlu_pro_leaderboard_submission`) into `data/mmlu-pro/`. Emits per-model overall + 14 per-subject accuracies. |
+| `lexam` | LEXam project website | Converts the LEXam legal-reasoning leaderboard (open-question judge scores + 4-choice MCQ accuracy) into `data/lexam/`. |
 
 ### Mercor Evaluation Exports
 
@@ -51,6 +52,41 @@ Records are generated under benchmark-specific datastore directories, for
 example `data/apex-agents/<developer>/<model>/<uuid>.json`. Generated records
 are intended for the Hugging Face datastore submission, not the GitHub adapter
 PR.
+
+### LEXam
+
+```bash
+uv run python -m every_eval_ever.adapters.lexam.adapter --output-dir data
+```
+
+The converter records only what the leaderboard publishes:
+
+| Metric | Evaluation | Scope |
+|---|---|---|
+| Open Question Judge Score | `lexam.open_question` | `open_question` **test** split, n=2,541, graded by a pointwise-minimum ensemble of GPT-4o, DeepSeek-V3 and Qwen3-32B (human-expert validated) |
+| Multiple-Choice Accuracy | `lexam.mcq_4_choices` | `mcq_4_choices`, n=1,655 — the site column reproduces the paper's MCQ-4 table and does **not** pool the 8/16/32-choice configs |
+
+Provenance decisions worth knowing:
+
+- `eval_library` names the harness (`lighteval`, version unknown), not the
+  benchmark. The benchmark lives in `eval_library.additional_details`.
+- `evaluator_relationship` is `third_party` — LEXam-Benchmark scores models it
+  did not develop.
+- The judge ensemble takes the **pointwise minimum** of three judges. The
+  schema's `AggregationMethod` enum cannot express that, so no typed value is
+  set and the method is recorded in `llm_scoring.additional_details`.
+- `model_info.id` comes from the eval-card-registry;
+  `model_info.additional_details.model_id_resolution` reports whether it came
+  from a confirmed alias, a direct canonical match, or a Hugging Face id used
+  because the registry has no entry for the evaluated checkpoint.
+  `developer_org_id` carries the registry's normalized company org, which
+  differs from the id prefix whenever the id is a Hugging Face repo id.
+- `DeepSeek-V3.2-chat` and `DeepSeek-V3.2-reasoner` are the non-thinking and
+  thinking modes of one release, so they share `model_info.id` and differ in
+  `generation_config.generation_args.reasoning`.
+- Standard errors come from the paper's tables and are attached only while the
+  scraped score still matches the score the paper reports.
+
 
 ## Notes
 
