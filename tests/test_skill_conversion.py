@@ -12,6 +12,11 @@ at a canonical ``data/<collection>/<developer>/<model>/`` path. Change the schem
 validator, or the publisher and this file goes red, naming the skill as the thing to
 fix — instead of the change surfacing in a contributor's first PR.
 
+What this does NOT catch: a *new* rule that the reference conversion happens to satisfy
+already. Then CI stays green while `reference/datastore-gate.md` quietly goes incomplete.
+So when you add a check to the validator, re-derive that file from `REGISTERED_CHECKS`
+rather than trusting a green run here.
+
 Regenerate the frozen conversion after a deliberate change:
 
     python -c "from tests.test_skill_conversion import regenerate_frozen_reference as r; r()"
