@@ -355,6 +355,14 @@ uv run datamodel-codegen --input every_eval_ever/schemas/instance_level_eval.sch
 uv run python -m every_eval_ever.post_codegen
 ```
 
+Changing the schema or the validator also changes what a contributor has to produce, so
+`tests/test_skill_conversion.py` re-validates the contributor-facing
+[`eee-dataset-conversion` skill](.claude/skills/eee-dataset-conversion/SKILL.md) — its
+templates and one frozen reference conversion — against the live validator. If it goes
+red, the guidance is what needs updating; the failure message says which file and gives
+the regeneration command. Don't skip it: it is the check that keeps the docs from
+quietly telling the next contributor something untrue.
+
 ## 🔌 Eval Converters
 
 We have prepared converters to make adapting to our schema as easy as possible. At the moment, we support converting local evaluation harness logs from `Inspect AI`, `HELM` and `lm-evaluation-harness` into our unified schema. Each converter produces aggregate JSON and optionally instance-level JSONL output.

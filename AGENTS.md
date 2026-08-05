@@ -34,6 +34,18 @@ convert external eval sources into it.
 - A dataset contribution is usually three PRs (adapter here · ids in `eval-card-registry`
   · data in `EEE_datastore`) — cross-link them. See the skill's "three PRs" section.
 
+## Changing the schema, the validator, or the publisher
+These change what a *contribution* must look like, so the contributor-facing guidance is
+part of the change — not a follow-up.
+- `tests/test_skill_conversion.py` is the tripwire: it re-validates the skill's templates
+  and one frozen reference conversion through the real CLI (semantic checks on). Run it.
+- When it fails, fix the **skill**, not the test: the rule lives in
+  `.claude/skills/eee-dataset-conversion/reference/` (gate rules in `datastore-gate.md`,
+  field semantics in `fields.md`), the emitting code in `templates/`. Then regenerate the
+  frozen conversion with the command in the failure message.
+- Don't restate the new rule anywhere else. The test is the enforcement; prose that
+  duplicates it is what went stale last time.
+
 ## Human docs
 `README.md` and `every_eval_ever/adapters/README.md` are for people. Keep agent
 instructions here and in `.claude/skills/`.
