@@ -42,7 +42,7 @@ def _sample_hash(raw: str, reference: list[str]) -> str:   # ONE recipe — ever
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()   # == adapters/openeval.sample_hash
 
 
-def _instance(item, evaluation_id, evaluation_result_id, model_id):
+def _instance(item, evaluation_id, evaluation_name, evaluation_result_id, model_id):
     tok = None                                             # token_usage is ALL-OR-NOTHING:
     if item.in_tok is not None and item.out_tok is not None:   # build it only if you have all three
         tok = TokenUsage(input_tokens=item.in_tok, output_tokens=item.out_tok,
@@ -51,7 +51,7 @@ def _instance(item, evaluation_id, evaluation_result_id, model_id):
         schema_version=SCHEMA_VERSION,                     # same version as the aggregate
         evaluation_id=evaluation_id,                       # REQUIRED FK: byte-identical to aggregate's
         evaluation_result_id=evaluation_result_id,         # FK to THIS evaluation_results[] row
-        evaluation_name=f"{SRC}.{item.benchmark}",         # REQUIRED on the instance too (fallback FK)
+        evaluation_name=evaluation_name,                   # REQUIRED on the instance too (fallback FK)
         model_id=model_id,                                 # REQUIRED flat HF id == model_info.id
         sample_id=item.sample_id,                          # REQUIRED dataset id (e.g. gsm8k_0001)
         sample_hash=_sample_hash(item.raw, item.reference),# optional cross-model fallback for sample_id
@@ -86,11 +86,22 @@ def export_with_instances(log, developer, model_name, items, out_root, staged_ro
     staged_dir = datastore_output_dir(staged_root, collection, model_id, developer)
     staged_dir.mkdir(parents=True, exist_ok=True)
 
+    # READ the join keys off the aggregate instead of recomputing them: the instance FK
+    # must equal the aggregate's evaluation_result_id, and re-deriving it by formula means
+    # the two silently diverge the day either side's id scheme changes.
+    result_ids = {r.evaluation_name: r.evaluation_result_id for r in log.evaluation_results}
+
     lines, digest = [], hashlib.sha256()
     for item in items:
-        # DEFAULT one-log-per-model grain: derive result_id PER ITEM so each line attaches
-        # to the right aggregate result (== the aggregate _result's evaluation_result_id).
-        rec = _instance(item, log.evaluation_id, f"{SRC}.{item.benchmark}", model_id)
+        # DEFAULT one-log-per-model grain: look up the result PER ITEM so each line attaches
+        # to the right aggregate result. An item with no matching result is an orphan FK --
+        # fail loudly rather than emit a line pointing at nothing.
+        name = f"{SRC}.{item.benchmark}"
+        if name not in result_ids:
+            raise ValueError(
+                f"sample {item.sample_id!r} names {name!r}, which is not one of the "
+                f"aggregate's results {sorted(result_ids)}")
+        rec = _instance(item, log.evaluation_id, name, result_ids[name], model_id)
         line = (json.dumps(rec.model_dump(mode="json", exclude_none=True),
                            ensure_ascii=False) + "\n").encode("utf-8")
         digest.update(line)                                # checksum the EXACT bytes

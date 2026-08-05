@@ -257,6 +257,24 @@ def test_instance_template_publishes_gate_clean_pair(tmp_path, capsys):
     _assert_gate_clean(published, capsys)
 
 
+def test_instance_template_refuses_an_orphan_sample(tmp_path):
+    """A sample naming no aggregate result must fail, not emit a dangling FK."""
+    aggregate = _load_template('aggregate_adapter.py')
+    sidecar = _load_template('instance_sidecar.py')
+
+    log = aggregate.make_log(_valid_row(), FROZEN_RETRIEVED_TS)
+    with pytest.raises(ValueError, match='not one of'):
+        sidecar.export_with_instances(
+            log,
+            'demo-org',
+            'demo-model',
+            [_sample_item(), types.SimpleNamespace(**{**vars(_sample_item()), 'benchmark': 'absent_bench'})],
+            tmp_path / 'data',
+            tmp_path / 'staged' / 'data',
+            collection=SRC_SLUG,
+        )
+
+
 def test_frozen_reference_conversion_still_passes_the_gate(capsys):
     """The committed conversion a contributor would submit, re-checked as-is."""
     files = _frozen_record_files()
