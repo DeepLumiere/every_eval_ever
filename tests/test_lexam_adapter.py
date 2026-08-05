@@ -263,6 +263,17 @@ def test_no_registry_drift_against_the_vendored_snapshot() -> None:
         assert entry['score_type'] == 'continuous', spec.metric_id
 
 
+def test_developer_matches_the_datastore_path() -> None:
+    """`developer` comes from the shared helper; the path comes from the id.
+
+    They agree today for every LEXam model. If the helper ever normalizes an
+    org differently (`Qwen` -> `alibaba`), this catches the record claiming one
+    developer while landing in another's directory.
+    """
+    for label, identity in _MODEL_IDENTITIES.items():
+        assert identity.developer == identity.model_id.split('/')[0], label
+
+
 def test_one_retrieval_timestamp_per_run() -> None:
     """All records of a run describe the same retrieval of the page."""
     logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)

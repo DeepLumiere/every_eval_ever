@@ -60,6 +60,7 @@ from every_eval_ever.eval_types import (
     StandardError,
     Uncertainty,
 )
+from every_eval_ever.helpers.developer import get_developer
 from every_eval_ever.helpers.io import (
     SourceConversionResult,
     SourceRecordFailure,
@@ -285,8 +286,16 @@ class ModelIdentity:
 
     @property
     def developer(self) -> str:
-        """Developer as it appears in the id, matching the datastore path."""
-        return self.model_id.split('/')[0]
+        """Developer for this model, via the repo-wide helper.
+
+        Deliberately not a private mapping: `helpers.get_developer` owns the
+        repo's developer strings, and a per-adapter map is how the datastore
+        ended up with one model under two orgs. For an id carrying an org
+        prefix the helper returns that prefix, which is also what the datastore
+        path is derived from — `test_developer_matches_the_datastore_path`
+        keeps the two from drifting apart.
+        """
+        return get_developer(self.model_id)
 
 
 _MODEL_IDENTITIES = {
