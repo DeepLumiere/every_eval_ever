@@ -37,7 +37,7 @@
         ]
       },
       "metric_config": {
-        "metric_id": "demo-source.accuracy",
+        "metric_id": "accuracy",
         "metric_name": "accuracy",
         "metric_kind": "accuracy",
         "metric_unit": "proportion",

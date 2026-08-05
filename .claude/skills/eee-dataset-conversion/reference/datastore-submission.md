@@ -34,8 +34,8 @@ real time. What makes a record valid is `datastore-gate.md`; what a field means 
   writing into a checkout's `data/` is only for a deliberate refresh.
 
 ## What the PR description needs
-- **Source** — the leaderboard/paper, the *dataset* the eval ran on, and a **pinned
-  revision** (commit SHA / dataset revision / snapshot date), not a mutable `main`.
+- **Source** — the leaderboard/paper, the *dataset* the eval ran on, and a pinned
+  revision (commit SHA / dataset revision / snapshot date), not a mutable `main`.
 - **Coverage** — "N source rows → M records, K dropped (reason)". Expect to be asked
   "what about the other models?"; answer it up front, and name any cap or sample you
   applied. The `adapter_reports/<collection>_failures.json` your adapter wrote is the

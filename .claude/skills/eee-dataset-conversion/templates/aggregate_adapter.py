@@ -60,9 +60,12 @@ def _result(entry):                                # one benchmark -> one result
             # your metric -> name/id/kind/unit/direction/bounds; else you emit valid-but-wrong
             # metadata (validating != correct; see the metric_config notes in fields.md).
             metric_name="accuracy", metric_kind="accuracy", metric_unit="proportion",
-            # ALWAYS set a NAMESPACED metric_id: a bare "score"/"rank"/"elo" collides with
-            # every other leaderboard's generic metric (the most repeated review comment).
-            metric_id=f"{SRC}.accuracy",
+            # ALWAYS set metric_id, and pick its FORM deliberately (fields.md metric_id):
+            # a real GLOBAL metric takes the registry's canonical id -- plain "accuracy"
+            # here, NOT f"{SRC}.accuracy", which would fragment the one join the datastore
+            # exists for. Only a leaderboard-SPECIFIC construct gets namespaced
+            # (f"{SRC}.overall"), and a bare "score"/"rank"/"cost" is never acceptable.
+            metric_id="accuracy",
             lower_is_better=False, score_type=ScoreType.continuous,  # never omit score_type
             # BOUNDS MUST CONTAIN THE SCORE (hard error otherwise). Use the scale the
             # SOURCE's numbers are on -- proportion 0-1 / percent 0-100 / unbounded +-inf --
