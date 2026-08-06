@@ -268,9 +268,7 @@ def test_every_identity_declares_availability_and_id_provenance() -> None:
 def test_no_registry_drift_against_the_vendored_snapshot() -> None:
     """Every registry-facing value must still match the pinned registry state.
 
-    This is the guard that catches an invented metric id or a stale bound: the
-    snapshot is regenerated from a registry checkout, so a drift shows up as a
-    failing test and a reviewable diff rather than as silently wrong data.
+    Regenerate the snapshot with refresh_registry_snapshot.py when this fails.
     """
     snapshot = registry_snapshot()
     assert snapshot, 'registry_snapshot.json is missing'
@@ -300,11 +298,10 @@ def test_no_registry_drift_against_the_vendored_snapshot() -> None:
 
 
 def test_developer_matches_the_datastore_path() -> None:
-    """`developer` comes from the shared helper; the path comes from the id.
+    """`developer` comes from the shared helper, the datastore path from the id.
 
-    They agree today for every LEXam model. If the helper ever normalizes an
-    org differently (`Qwen` -> `alibaba`), this catches the record claiming one
-    developer while landing in another's directory.
+    If the helper ever normalizes an org differently (`Qwen` -> `alibaba`), a
+    record would claim one developer and land in another's directory.
     """
     for label, identity in _MODEL_IDENTITIES.items():
         assert identity.developer == identity.model_id.split('/')[0], label
@@ -334,12 +331,8 @@ def test_deepseek_api_modes_share_one_model_id() -> None:
 
 
 def test_inference_settings_follow_the_papers_model_group() -> None:
-    """The group is not presentation: it decides harness and settings.
-
-    Paper §3.3 lists the three groups and states conventional models ran at
-    temperature 0 / 4096 tokens under lighteval, while reasoning models are
-    unsupported by lighteval and ran at 8192 tokens on official settings;
-    appendix F gives the per-model departures and how each group was served.
+    """Paper §3.3: conventional models ran at temperature 0 / 4096 tokens under
+    lighteval, reasoning models at 8192 tokens on their official settings.
     """
     logs = {
         log.model_info.name: log
@@ -384,8 +377,7 @@ def test_groups_follow_the_papers_own_table_blocks() -> None:
     """Table 1 brackets the 36 rows into Reasoning / Large / Small.
 
     The group drives the harness, the settings and the serving facts, so a
-    mis-bracketed row silently mislabels all three. Apertus-70B sits in the
-    Large block, not with the 7-14B models.
+    mis-bracketed row mislabels all three.
     """
     groups = {label: i.group for label, i in _MODEL_IDENTITIES.items()}
     counts = Counter(groups.values())

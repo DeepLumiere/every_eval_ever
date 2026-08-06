@@ -33,9 +33,8 @@ def test_adapter_data_files_are_included_in_wheels() -> None:
     """Data an adapter reads at runtime must be listed in package-data.
 
     setuptools ships only ``.py`` files by default, so an omitted data file is
-    present in a checkout and absent from an installed wheel. The adapter then
-    degrades silently: LEXam falls back to an ``unknown`` registry revision and
-    ``unknown`` metric review status instead of failing.
+    present in a checkout and absent from an installed wheel, where the adapter
+    falls back to ``unknown`` provenance instead of failing.
     """
     if not PYPROJECT.is_file():
         pytest.skip(f'pyproject.toml not available: {PYPROJECT}')

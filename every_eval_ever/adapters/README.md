@@ -67,120 +67,42 @@ PR.
 uv run python -m every_eval_ever.adapters.lexam.adapter --output-dir data
 ```
 
-The converter records only what the leaderboard publishes:
+One record per model, with one result per published leaderboard column:
 
-| Metric | Evaluation | Scope |
-|---|---|---|
-| Open Question Judge Score | `lexam.open_question` | `open_question` **test** split, n=2,541, graded by a pointwise-minimum ensemble of GPT-4o, DeepSeek-V3 and Qwen3-32B (human-expert validated) |
-| Multiple-Choice Accuracy | `lexam.mcq_4_choices` | `mcq_4_choices`, n=1,655 — the site column reproduces the paper's MCQ-4 table and does **not** pool the 8/16/32-choice configs |
+| Metric | Evaluation | Scale | Scope |
+|---|---|---|---|
+| Open Question Judge Score | `lexam.open_question` | `[0,100]` | test split, n=2,541, scored by a pointwise-minimum ensemble of three judges |
+| Multiple-Choice Accuracy | `lexam.mcq_4_choices` | `[0,1]` | n=1,655; the 4-choice config only, not the 8/16/32-choice ones |
 
-Provenance decisions worth knowing:
+The site prints both columns as percentages. Each is emitted on the scale of
+its registry metric, with the published percentage kept in
+`score_details.details`.
 
-- `eval_library` names the harness (`lighteval`, version unknown), not the
-  benchmark. The benchmark lives in `eval_library.additional_details`.
-- `evaluator_relationship` is `third_party` — LEXam-Benchmark scores models it
-  did not develop.
-- The judge ensemble takes the **pointwise minimum** of three judges. The
-  schema's `AggregationMethod` enum cannot express that, so no typed value is
-  set and the method is recorded in `llm_scoring.additional_details`.
-- `model_info.id` comes from the eval-card-registry;
-  `model_info.additional_details.model_id_resolution` reports whether it came
-  from a confirmed alias, a direct canonical match, or a Hugging Face id used
-  because the registry has no entry for the evaluated checkpoint.
-  `developer_org_id` carries the registry's normalized company org, which
-  differs from the id prefix whenever the id is a Hugging Face repo id.
-- `DeepSeek-V3.2-chat` and `DeepSeek-V3.2-reasoner` are the non-thinking and
-  thinking modes of one release, so they share `model_info.id` and differ in
-  `generation_config.generation_args.reasoning`.
-- Inference settings and serving are **derived from the paper's own
-  Reasoning / Large / Small bracketing of Table 1** (17/8/11) rather than left
-  unknown: conventional models ran at temperature 0 with 4,096 tokens,
-  reasoning models at 8,192 tokens on their official recommended settings, and
-  appendix F gives the endpoints (local vLLM for the 7–14B conventional models,
-  official APIs for the closed ones, Together AI for the rest).
-- Every row names `lighteval`, on a LEXam author's confirmation for the current
-  leaderboard rows (cited in `eval_library.additional_details.harness_source`).
-  §3.3 says lighteval did not support the reasoning models at the time of
-  writing, so those rows also carry that caveat in `harness_note` — the
-  statement and its scope stay visible instead of collapsing into `unknown`.
-- Where LEXam's own runner (`litellm_eval.py`) names a model, the exact served
-  string and its sampling arguments are recorded in
-  `model_info.additional_details.served_model` and `generation_args`. That
-  config predates the post-paper leaderboard rows, so it covers 15 of 36
-  models and nothing is extrapolated to the others. It disagrees with appendix
-  F for `Gemma-3-12B-it` (Together AI vs local vLLM); `deployment_type` follows
-  the paper and `served_model_note` records the conflict.
-- Standard errors come from the paper's tables and are attached only while the
-  scraped score still matches the score the paper reports.
-- Metric ids, bounds and direction are the registry's, not the adapter's:
-  `accuracy` is canonically a proportion on `[0,1]`, so the leaderboard's
-  percentage is converted onto that scale (with the standard error), while the
-  judge score keeps the `[0,100]` scale of its registry entry.
-  `registry_snapshot.json` vendors just the entities this adapter emits, pinned
-  to the registry revision they came from, and the tests fail if any of them
-  drifts. Refresh it after a registry change:
+Model ids, metric ids, bounds and direction come from the eval-card-registry
+through `registry_snapshot.json`, which vendors the entities this adapter emits
+and is pinned to the registry revision they came from. The tests fail if an
+emitted value drifts from the pin, so regenerate it after a registry change:
 
-  ```bash
-  uv run python -m every_eval_ever.adapters.lexam.refresh_registry_snapshot \
-      --registry /path/to/eval-card-registry
-  ```
-
-  Each metric reports the registry's own `review_status`, read from the
-  snapshot, so a metric promoted from `draft` to `reviewed` upstream needs a
-  refresh and no code change. `--check` answers "is the pin stale?" without
-  writing — it exits non-zero and names both revisions, which is the thing to
-  run after a registry PR merges:
-
-  ```bash
-  uv run python -m every_eval_ever.adapters.lexam.refresh_registry_snapshot \
-      --registry /path/to/eval-card-registry --check
-  ```
-
-Submitting the generated records to the datastore (after the registry entities
-are merged, so no record cites a `draft` metric):
-
-```python
-from huggingface_hub import HfApi
-
-HfApi().upload_folder(
-    folder_path='data/lexam',
-    path_in_repo='data/lexam',
-    repo_id='evaleval/EEE_datastore',
-    repo_type='dataset',
-    commit_message='[Submission] Add LEXam leaderboard',
-    create_pr=True,
-)
+```bash
+uv run python -m every_eval_ever.adapters.lexam.refresh_registry_snapshot \
+    --registry /path/to/eval-card-registry
 ```
 
-Record filenames are fresh uuids on every run, so a second `upload_folder` onto
-an open submission PR *adds* another copy of every model rather than replacing
-it. To update a submission, delete the folder and add the new records in one
-commit:
+Add `--check` to test the pin without writing: it exits non-zero and names both
+revisions. Metric `review_status` is read from the snapshot, so a metric
+promoted upstream needs a refresh rather than a code change.
 
-```python
-from pathlib import Path
+Inference settings, serving and standard errors are not on the leaderboard;
+they come from the paper (arXiv:2505.12864v7 §3.3, appendix F, Tables 1 and 10)
+and from LEXam's own runner, `litellm_eval.py`, which names the served model for
+15 of the 36 rows. Each record cites the source it used, and a standard error is
+attached only while the scraped score still equals the published one.
 
-from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
-
-records = sorted(Path('data/lexam').rglob('*.json'))
-HfApi().create_commit(
-    repo_id='evaleval/EEE_datastore',
-    repo_type='dataset',
-    revision='refs/pr/<n>',
-    commit_message='Update LEXam records',
-    operations=[
-        CommitOperationDelete(path_in_repo='data/lexam/', is_folder=True),
-        *(
-            CommitOperationAdd(
-                path_in_repo=f'data/lexam/{path.relative_to("data/lexam")}',
-                path_or_fileobj=str(path),
-            )
-            for path in records
-        ),
-    ],
-)
-```
-
+Submission follows the datastore mechanics in the conversion skill. One
+adapter-specific caveat: record filenames are fresh uuids per run, so a second
+`upload_folder` onto an open submission PR adds another copy of every model.
+Update a submission by deleting `data/lexam/` and adding the new records in a
+single `create_commit`.
 
 ## Notes
 

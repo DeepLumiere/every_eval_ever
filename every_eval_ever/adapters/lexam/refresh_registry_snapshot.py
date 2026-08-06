@@ -1,10 +1,9 @@
 """Regenerate `registry_snapshot.json` from a local eval-card-registry checkout.
 
-The snapshot vendors **only** the entities this adapter emits — model ids
-(subjects and judges), metric ids with their canonical bounds, the harness and
-the benchmark aliases — so `tests/test_lexam_adapter.py` fails when any of them
-drifts from the registry instead of silently shipping a stale bound or an id
-that no longer resolves.
+The snapshot vendors only the entities this adapter emits: model ids (subjects
+and judges), metric ids with their canonical bounds, the harness and the
+benchmark aliases. `tests/test_lexam_adapter.py` fails when any of them drifts
+from the registry.
 
 Usage:
     uv run python -m every_eval_ever.adapters.lexam.refresh_registry_snapshot \
