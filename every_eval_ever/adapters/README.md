@@ -151,7 +151,13 @@ uv run python -m every_eval_ever.adapters.vectara_hallucination_leaderboard.adap
 ```
 
 Bump `SOURCE_COMMIT` to pick up a newer leaderboard run. The evaluated corpus
-is private, so each result records the public result file as provenance rather
-than a redistributable dataset. The pinned files record no serving platform, so
+is private, so the log records the public result file as provenance rather than
+a redistributable dataset. The pinned files record no serving platform, so
 `deployment_type` stays `unknown`; `model_availability` is derived from the
 source's `accessibility` annotation.
+
+Provenance that is constant for a run — the source file, commit, resolve URL,
+scoring model and temperature policy — lives once in `source_metadata`. Each of
+the 40 results carries only what varies, because repeating the constants on
+every result doubled the size of each record. That invariant is pinned by
+`test_constant_provenance_is_not_repeated_per_result`.
