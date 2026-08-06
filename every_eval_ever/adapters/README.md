@@ -2,6 +2,14 @@
 
 One-off adapter scripts that fetch leaderboard data from external sources and convert it to the Every Eval Ever schema. These are run manually, not via the main CLI.
 
+## Writing a new adapter
+
+Start from the `eee-dataset-conversion` agent skill —
+[`.claude/skills/eee-dataset-conversion/SKILL.md`](../../.claude/skills/eee-dataset-conversion/SKILL.md).
+It carries the field semantics, the merge-gate checks (`reference/datastore-gate.md`),
+runnable templates, and the datastore submission mechanics. `tests/test_skill_conversion.py`
+re-validates those templates against the live validator, so they stay current.
+
 ## Usage
 
 Each adapter is run with `uv run python -m every_eval_ever.adapters.<name>.adapter`.
