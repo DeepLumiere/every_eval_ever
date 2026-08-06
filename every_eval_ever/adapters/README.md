@@ -84,6 +84,20 @@ Provenance decisions worth knowing:
 - `DeepSeek-V3.2-chat` and `DeepSeek-V3.2-reasoner` are the non-thinking and
   thinking modes of one release, so they share `model_info.id` and differ in
   `generation_config.generation_args.reasoning`.
+- Inference settings, harness and serving are **derived from the paper's own
+  Reasoning / Large / Small bracketing of Table 1** (17/8/11) rather than left
+  unknown: conventional models ran at temperature 0 with 4,096 tokens under
+  lighteval, reasoning models at 8,192 tokens on their official settings under
+  a harness §3.3 says is not lighteval, and appendix F gives the endpoints
+  (local vLLM for the 7–14B conventional models, official APIs for the closed
+  ones, Together AI for the rest).
+- Where LEXam's own runner (`litellm_eval.py`) names a model, the exact served
+  string and its sampling arguments are recorded in
+  `model_info.additional_details.served_model` and `generation_args`. That
+  config predates the post-paper leaderboard rows, so it covers 15 of 36
+  models and nothing is extrapolated to the others. It disagrees with appendix
+  F for `Gemma-3-12B-it` (Together AI vs local vLLM); `deployment_type` follows
+  the paper and `served_model_note` records the conflict.
 - Standard errors come from the paper's tables and are attached only while the
   scraped score still matches the score the paper reports.
 - Metric ids, bounds and direction are the registry's, not the adapter's:

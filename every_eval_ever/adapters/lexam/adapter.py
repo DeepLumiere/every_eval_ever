@@ -197,8 +197,22 @@ PAPER_SETTINGS_CITATION = (
 CONVENTIONAL_MAX_TOKENS = 4096
 CONVENTIONAL_TEMPERATURE = 0.0
 REASONING_MAX_TOKENS = 8192
-# Per-model departures appendix F spells out.
-REASONING_TEMPERATURE = {'DeepSeek-R1': 0.6, 'QwQ-32B': 0.6}
+# LEXam's own runner pins the served model string and the sampling arguments for
+# the models it covers. Its snapshot predates the post-paper leaderboard rows, so
+# it names only part of the table; where it does name a model it is the most
+# primary statement of what was actually sent to which endpoint.
+RUNNER_CONFIG_CITATION = (
+    'LEXam-Benchmark/LEXam litellm_eval.py (MODEL_DICT, GENE_ARGS_DICT)'
+)
+# Per-model departures appendix F spells out, plus the sampling arguments the
+# runner's GENE_ARGS_DICT sets for the Qwen reasoning models.
+REASONING_TEMPERATURE = {
+    'DeepSeek-R1': 0.6,
+    'QwQ-32B': 0.6,
+    'Qwen3-235B': 0.6,
+}
+REASONING_TOP_P = {'QwQ-32B': 0.95, 'Qwen3-235B': 0.95}
+REASONING_TOP_K = {'Qwen3-235B': 20.0}
 REASONING_EXTRA_DETAILS = {
     'O3-mini': {'reasoning_effort': 'high'},
     'Claude-3.7-Sonnet': {'reasoning_budget_tokens': '4096'},
@@ -315,6 +329,10 @@ class ModelIdentity:
     registry_canonical_id: str | None = None
     api_model_name: str | None = None
     note: str | None = None
+    #: The model string LEXam's runner sends, when its config names this label.
+    served_model: str | None = None
+    #: Set when the runner's endpoint and appendix F's rule disagree.
+    served_model_note: str | None = None
     #: §F LLM Endpoints. `None` means it was served locally under vLLM.
     inference_platform: str | None = None
     #: The paper's model group (§3.3 Model Selection). Not presentation: it
@@ -360,7 +378,7 @@ _MODEL_IDENTITIES = {
         developer_org_id='swiss-ai-initiative',
         availability='open_weights',
         id_source='registry_alias',
-        group='small',
+        group='large',
         inference_platform='together_ai',
     ),
     'Apertus-8B': ModelIdentity(
@@ -373,6 +391,7 @@ _MODEL_IDENTITIES = {
     ),
     'Claude-3.7-Sonnet': ModelIdentity(
         model_id='anthropic/claude-sonnet-3.7',
+        served_model='anthropic/claude-3-7-sonnet-20250219',
         developer_org_id='anthropic',
         availability='closed_weights',
         id_source='registry_alias',
@@ -389,6 +408,7 @@ _MODEL_IDENTITIES = {
     ),
     'DeepSeek-R1': ModelIdentity(
         model_id='deepseek-ai/DeepSeek-R1',
+        served_model='together_ai/deepseek-ai/DeepSeek-R1',
         developer_org_id='deepseek',
         availability='open_weights',
         id_source='registry_alias',
@@ -397,6 +417,7 @@ _MODEL_IDENTITIES = {
     ),
     'DeepSeek-V3': ModelIdentity(
         model_id='deepseek-ai/DeepSeek-V3',
+        served_model='together_ai/deepseek-ai/DeepSeek-V3',
         developer_org_id='deepseek',
         availability='open_weights',
         id_source='registry_alias',
@@ -455,6 +476,7 @@ _MODEL_IDENTITIES = {
     ),
     'GPT-4.1-mini': ModelIdentity(
         model_id='openai/gpt-4.1-mini',
+        served_model='gpt-4.1-mini-2025-04-14',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
@@ -463,6 +485,7 @@ _MODEL_IDENTITIES = {
     ),
     'GPT-4.1-nano': ModelIdentity(
         model_id='openai/gpt-4.1-nano',
+        served_model='gpt-4.1-nano-2025-04-14',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
@@ -471,6 +494,7 @@ _MODEL_IDENTITIES = {
     ),
     'GPT-4o': ModelIdentity(
         model_id='openai/gpt-4o',
+        served_model='gpt-4o',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
@@ -479,6 +503,7 @@ _MODEL_IDENTITIES = {
     ),
     'GPT-4o-mini': ModelIdentity(
         model_id='openai/gpt-4o-mini',
+        served_model='gpt-4o-mini',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
@@ -527,6 +552,7 @@ _MODEL_IDENTITIES = {
     ),
     'Gemini-2.5-Pro': ModelIdentity(
         model_id='google/gemini-2.5-pro',
+        served_model='gemini/gemini-2.5-pro-preview-03-25',
         developer_org_id='google',
         availability='closed_weights',
         id_source='registry_alias',
@@ -552,6 +578,13 @@ _MODEL_IDENTITIES = {
     ),
     'Gemma-3-12B-it': ModelIdentity(
         model_id='google/gemma-3-12b-it',
+        served_model='together_ai/google/gemma-3-12b-it',
+        served_model_note=(
+            "the runner's config routes this model through Together AI, while "
+            'appendix F puts every 7-14B conventional model on local vLLM; '
+            'deployment_type follows the paper and this records the conflict '
+            'rather than resolving it'
+        ),
         developer_org_id='google',
         availability='open_weights',
         id_source='registry_alias',
@@ -560,6 +593,7 @@ _MODEL_IDENTITIES = {
     ),
     'Llama-3.1-405B-it': ModelIdentity(
         model_id='meta/llama-3-1-405b-instruct',
+        served_model='together_ai/meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo',
         developer_org_id='meta',
         availability='open_weights',
         id_source='registry_alias',
@@ -580,6 +614,7 @@ _MODEL_IDENTITIES = {
     ),
     'Llama-3.3-70B-it': ModelIdentity(
         model_id='meta-llama/Llama-3.3-70B-Instruct',
+        served_model='together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo',
         developer_org_id='meta',
         availability='open_weights',
         id_source='registry_canonical',
@@ -588,6 +623,7 @@ _MODEL_IDENTITIES = {
     ),
     'Llama-4-Maverick': ModelIdentity(
         model_id='meta-llama/Llama-4-Maverick-17B-128E',
+        served_model='together_ai/meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8',
         developer_org_id='meta',
         availability='open_weights',
         id_source='registry_alias',
@@ -605,6 +641,7 @@ _MODEL_IDENTITIES = {
     ),
     'O3-mini': ModelIdentity(
         model_id='openai/o3-mini',
+        served_model='o3-mini',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
@@ -621,6 +658,7 @@ _MODEL_IDENTITIES = {
     ),
     'QwQ-32B': ModelIdentity(
         model_id='Qwen/QwQ-32B',
+        served_model='together_ai/Qwen/QwQ-32B',
         developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_alias',
@@ -637,6 +675,7 @@ _MODEL_IDENTITIES = {
     ),
     'Qwen3-235B': ModelIdentity(
         model_id='Qwen/Qwen3-235B-A22B',
+        served_model='together_ai/Qwen/Qwen3-235B-A22B-fp8-tput',
         developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_alias',
@@ -1001,6 +1040,11 @@ def _model_details(identity: ModelIdentity, label: str) -> dict[str, str]:
     if identity.api_model_name is not None:
         details['api_model_name'] = identity.api_model_name
         details['api_mode_source'] = DEEPSEEK_MODE_CITATION
+    if identity.served_model is not None:
+        details['served_model'] = identity.served_model
+        details['served_model_source'] = RUNNER_CONFIG_CITATION
+    if identity.served_model_note is not None:
+        details['served_model_note'] = identity.served_model_note
     if identity.note is not None:
         details['model_id_note'] = identity.note
     return details
@@ -1020,8 +1064,12 @@ def _generation_config(identity: ModelIdentity, label: str) -> GenerationConfig:
             reasoning=True,
             max_tokens=REASONING_MAX_TOKENS,
             temperature=REASONING_TEMPERATURE.get(label),
+            top_p=REASONING_TOP_P.get(label),
+            top_k=REASONING_TOP_K.get(label),
         )
         details.update(REASONING_EXTRA_DETAILS.get(label, {}))
+        if label in REASONING_TOP_P or label in REASONING_TOP_K:
+            details['sampling_source'] = RUNNER_CONFIG_CITATION
     else:
         args = GenerationArgs(
             reasoning=False,

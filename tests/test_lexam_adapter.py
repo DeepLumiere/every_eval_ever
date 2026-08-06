@@ -1,5 +1,6 @@
 """Unit tests for the LEXam adapter."""
 
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,8 @@ from every_eval_ever.adapters.lexam.adapter import (
     OPEN_SECTION_TITLE,
     REASONING_EXTRA_DETAILS,
     REASONING_TEMPERATURE,
+    REASONING_TOP_K,
+    REASONING_TOP_P,
     REGISTRY_HARNESS,
     LEXamAdapter,
     _clean_model_name,
@@ -347,6 +350,53 @@ def test_per_model_departures_from_appendix_f() -> None:
     assert REASONING_EXTRA_DETAILS['Claude-3.7-Sonnet'] == {
         'reasoning_budget_tokens': '4096'
     }
+
+
+def test_groups_follow_the_papers_own_table_blocks() -> None:
+    """Table 1 brackets the 36 rows into Reasoning / Large / Small.
+
+    The group drives the harness, the settings and the serving facts, so a
+    mis-bracketed row silently mislabels all three. Apertus-70B sits in the
+    Large block, not with the 7-14B models.
+    """
+    groups = {label: i.group for label, i in _MODEL_IDENTITIES.items()}
+    counts = Counter(groups.values())
+    assert counts == {'reasoning': 17, 'large': 8, 'small': 11}
+    assert groups['Apertus-70B'] == 'large'
+    assert groups['Apertus-8B'] == 'small'
+    assert groups['DeepSeek-V3.2-chat'] == 'large'
+
+
+def test_runner_config_pins_the_served_model_and_sampling_args() -> None:
+    """LEXam's litellm_eval.py names what was sent, for the rows it covers."""
+    ids = _MODEL_IDENTITIES
+    # The variant the leaderboard label leaves out is stated by the runner.
+    assert ids['Llama-4-Maverick'].served_model == (
+        'together_ai/meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8'
+    )
+    assert ids['Gemini-2.5-Pro'].served_model == (
+        'gemini/gemini-2.5-pro-preview-03-25'
+    )
+    # Post-paper rows are absent from that snapshot; nothing is invented.
+    assert ids['GPT-5'].served_model is None
+    assert ids['Qwen3-Next'].served_model is None
+
+    # GENE_ARGS_DICT sets nucleus/top-k sampling for the Qwen reasoning models.
+    assert REASONING_TOP_P['Qwen3-235B'] == 0.95
+    assert REASONING_TOP_K['Qwen3-235B'] == 20.0
+    logs = {
+        log.model_info.name: log
+        for log in LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
+    }
+    gpt5_args = logs['GPT-5'].evaluation_results[0].generation_config
+    assert gpt5_args.generation_args.top_p is None
+
+
+def test_a_runner_endpoint_that_contradicts_the_paper_is_recorded() -> None:
+    """Gemma-3-12B-it: Together AI in the config, local vLLM by appendix F."""
+    gemma = _MODEL_IDENTITIES['Gemma-3-12B-it']
+    assert gemma.deployment_type == 'self_deployed'
+    assert 'Together AI' in gemma.served_model_note
 
 
 def test_deployment_is_derived_not_unknown() -> None:
