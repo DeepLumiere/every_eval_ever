@@ -690,7 +690,11 @@ _MODEL_IDENTITIES = {
         developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_alias',
-        note='registry id is variant-agnostic; HF publishes Instruct and Thinking variants',
+        note=(
+            'registry id is variant-agnostic; HF publishes Instruct and '
+            'Thinking variants, and neither the paper, the leaderboard page '
+            'nor litellm_eval.py names which was run'
+        ),
         group='reasoning',
         inference_platform='together_ai',
     ),
