@@ -1,7 +1,7 @@
 {
   "_meta": {
     "note": "Only the entities this adapter emits. Regenerate with refresh_registry_snapshot.py; do not edit by hand. `models_absent_from_seed` are ids the live registry resolves but no checked-in seed file declares (build-only draft canonicals) - see curation/UPSTREAM_DATA_ISSUES.md.",
-    "registry_revision": "f035bdf3af786d898ed40da3ccdf004d1e3d0e47",
+    "registry_revision": "e294a8468830b2bafb268c269231df757d76fa6c",
     "source": "evaleval/eval-card-registry seed/ (metrics, harnesses, benchmarks, models/core, models/sources)"
   },
   "benchmarks": {
