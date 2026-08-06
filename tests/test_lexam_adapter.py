@@ -320,13 +320,15 @@ def test_inference_settings_follow_the_papers_model_group() -> None:
         for log in LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
     }
 
-    # GPT-5 is a reasoning model: 8192 tokens, reasoning on, harness unnamed.
+    # GPT-5 is a reasoning model: 8192 tokens, reasoning on. The harness is
+    # lighteval on the author's confirmation, with the paper's caveat kept.
     gpt5 = logs['GPT-5']
     args = gpt5.evaluation_results[0].generation_config.generation_args
     assert args.reasoning is True
     assert args.max_tokens == 8192
-    assert gpt5.eval_library.name == 'unknown'
+    assert gpt5.eval_library.name == 'lighteval'
     assert 'lighteval' in gpt5.eval_library.additional_details['harness_note']
+    assert '#160' in gpt5.eval_library.additional_details['harness_source']
 
     # GPT-4o-mini is conventional: temperature 0, 4096 tokens, via lighteval.
     mini = logs['GPT-4o-mini']

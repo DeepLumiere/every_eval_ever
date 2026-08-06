@@ -217,13 +217,21 @@ REASONING_EXTRA_DETAILS = {
     'O3-mini': {'reasoning_effort': 'high'},
     'Claude-3.7-Sonnet': {'reasoning_budget_tokens': '4096'},
 }
-# §3.3: lighteval standardizes the conventional models; the reasoning models are
-# not supported by it, and the paper does not name what ran them instead.
+# §3.3 says lighteval standardizes the conventional models and that the
+# reasoning models were unsupported by it at the time of writing. Asked which
+# harness produced the current rows, a LEXam author confirmed on the converter
+# PR that they evaluated with lighteval, so every row names it and the reasoning
+# rows carry the paper's caveat rather than reporting an unknown harness.
 LIGHTEVAL_HARNESS = 'lighteval'
+MAINTAINER_HARNESS_CITATION = (
+    'evaleval/every_eval_ever#160 (comment 5202315911): "Yes, we evaluated '
+    'with lighteval."'
+)
 REASONING_HARNESS_NOTE = (
-    'Not lighteval: the paper states reasoning models are unsupported by it '
-    'and were run on the official recommended settings, without naming the '
-    'harness. LEXam ships litellm_eval.py for that path.'
+    'The paper states reasoning models were unsupported by lighteval at the '
+    'time of writing and were run on their official recommended settings; '
+    'LEXam ships litellm_eval.py for that path. The harness recorded here is '
+    "the author's confirmation for the current leaderboard rows."
 )
 
 _MEDAL_RE = re.compile(r'[\U0001f947-\U0001f949]')
@@ -1082,17 +1090,22 @@ def _generation_config(identity: ModelIdentity, label: str) -> GenerationConfig:
 
 
 def _eval_library(identity: ModelIdentity) -> EvalLibrary:
-    """lighteval for the conventional models; unnamed for the reasoning ones."""
+    """lighteval, per the author's confirmation for the current rows.
+
+    The reasoning rows also carry the paper's caveat that lighteval did not
+    support them at the time of writing, so a reader can see which statement
+    covers which run.
+    """
     details = {
         'benchmark': BENCHMARK_KEY,
         'leaderboard_url': LEADERBOARD_PAGE_URL,
         'github': GITHUB_REPO_URL,
-        'harness_source': PAPER_SETTINGS_CITATION,
+        'harness_source': MAINTAINER_HARNESS_CITATION,
         'model_group': identity.group,
     }
     if identity.reasoning:
         details['harness_note'] = REASONING_HARNESS_NOTE
-        return EvalLibrary(name='unknown', version='unknown', additional_details=details)
+        details['settings_source'] = PAPER_SETTINGS_CITATION
     details['lighteval_tasks'] = (
         'community|lexamoq_open_question, ' f'community|lexammcq_{MCQ_CONFIG}'
     )

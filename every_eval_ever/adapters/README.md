@@ -84,13 +84,17 @@ Provenance decisions worth knowing:
 - `DeepSeek-V3.2-chat` and `DeepSeek-V3.2-reasoner` are the non-thinking and
   thinking modes of one release, so they share `model_info.id` and differ in
   `generation_config.generation_args.reasoning`.
-- Inference settings, harness and serving are **derived from the paper's own
+- Inference settings and serving are **derived from the paper's own
   Reasoning / Large / Small bracketing of Table 1** (17/8/11) rather than left
-  unknown: conventional models ran at temperature 0 with 4,096 tokens under
-  lighteval, reasoning models at 8,192 tokens on their official settings under
-  a harness §3.3 says is not lighteval, and appendix F gives the endpoints
-  (local vLLM for the 7–14B conventional models, official APIs for the closed
-  ones, Together AI for the rest).
+  unknown: conventional models ran at temperature 0 with 4,096 tokens,
+  reasoning models at 8,192 tokens on their official recommended settings, and
+  appendix F gives the endpoints (local vLLM for the 7–14B conventional models,
+  official APIs for the closed ones, Together AI for the rest).
+- Every row names `lighteval`, on a LEXam author's confirmation for the current
+  leaderboard rows (cited in `eval_library.additional_details.harness_source`).
+  §3.3 says lighteval did not support the reasoning models at the time of
+  writing, so those rows also carry that caveat in `harness_note` — the
+  statement and its scope stay visible instead of collapsing into `unknown`.
 - Where LEXam's own runner (`litellm_eval.py`) names a model, the exact served
   string and its sampling arguments are recorded in
   `model_info.additional_details.served_model` and `generation_args`. That
