@@ -8,6 +8,7 @@ from every_eval_ever.helpers import schema as helper_schema
 from every_eval_ever.schema import get_schema_version
 
 PYPROJECT = Path(__file__).resolve().parents[1] / 'pyproject.toml'
+PACKAGE_DIR = Path(__file__).resolve().parents[1] / 'every_eval_ever'
 BUNDLE_EXTRA = 'all'
 # `every-eval-ever[inspect]`, capturing the extra names inside the brackets.
 _SELF_REFERENCE = re.compile(r'^\s*([A-Za-z0-9._-]+)\s*\[([^\]]*)\]')
@@ -26,6 +27,37 @@ def test_helper_schema_version_is_independent_of_checkout_layout(
     monkeypatch.setattr(helper_schema, '__file__', str(installed_module))
 
     assert helper_schema._load_schema_version() == get_schema_version()
+
+
+def test_adapter_data_files_are_included_in_wheels() -> None:
+    """Data an adapter reads at runtime must be listed in package-data.
+
+    setuptools ships only ``.py`` files by default, so an omitted data file is
+    present in a checkout and absent from an installed wheel. The adapter then
+    degrades silently: LEXam falls back to an ``unknown`` registry revision and
+    ``unknown`` metric review status instead of failing.
+    """
+    if not PYPROJECT.is_file():
+        pytest.skip(f'pyproject.toml not available: {PYPROJECT}')
+
+    pyproject = tomllib.loads(PYPROJECT.read_text(encoding='utf-8'))
+    patterns = pyproject['tool']['setuptools']['package-data']['every_eval_ever']
+    packaged = {
+        path.resolve()
+        for pattern in patterns
+        for path in PACKAGE_DIR.glob(pattern)
+    }
+    missing = sorted(
+        path.relative_to(PACKAGE_DIR).as_posix()
+        for path in PACKAGE_DIR.glob('adapters/**/*.json')
+        if path.resolve() not in packaged
+    )
+
+    assert not missing, (
+        'these adapter data files would be missing from a built wheel: '
+        f'{", ".join(missing)}. Add a matching pattern to '
+        '[tool.setuptools.package-data] every_eval_ever in pyproject.toml.'
+    )
 
 
 def _normalize(name: str) -> str:

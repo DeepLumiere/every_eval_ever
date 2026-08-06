@@ -85,6 +85,29 @@ def test_extract_section_rows_does_not_borrow_next_sections_table() -> None:
     ]
 
 
+def test_a_data_row_the_pattern_cannot_read_fails_the_section() -> None:
+    """Unreadable markup must fail, not shorten the published leaderboard."""
+    changed = FIXTURE_HTML.replace(
+        '<td>GPT-4o-mini</td><td>42.55</td>',
+        '<td>GPT-4o-mini</td><td>n/a</td>',
+    )
+
+    with pytest.raises(ValueError, match='Read 2 of 3 data rows'):
+        _extract_section_rows(changed, OPEN_SECTION_TITLE)
+
+
+def test_a_repeated_model_row_fails_instead_of_overwriting() -> None:
+    """Two rows for one label would silently collapse to the last score."""
+    duplicated = FIXTURE_HTML.replace(
+        '<tr><td><strong>2</strong></td><td>GPT-4o-mini</td><td>42.55</td></tr>',
+        '<tr><td><strong>2</strong></td><td>GPT-4o-mini</td><td>42.55</td></tr>'
+        '<tr><td><strong>4</strong></td><td>GPT-4o-mini</td><td>11.11</td></tr>',
+    )
+
+    with pytest.raises(ValueError, match='Duplicate model rows'):
+        _extract_section_rows(duplicated, OPEN_SECTION_TITLE)
+
+
 def test_fetch_leaderboard_combines_metrics_per_model() -> None:
     logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
     by_name = {log.model_info.name: log for log in logs}

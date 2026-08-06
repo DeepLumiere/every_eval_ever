@@ -30,6 +30,7 @@ import json
 import logging
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -792,6 +793,17 @@ def _extract_section_rows(
         re.DOTALL | re.IGNORECASE,
     )
 
+    # Every data row must be accounted for: a row the pattern cannot read is a
+    # markup change, and dropping it would publish a short leaderboard as a
+    # successful conversion.
+    data_rows = [
+        block
+        for block in re.findall(
+            r'<tr[^>]*>.*?</tr>', table_html, re.DOTALL | re.IGNORECASE
+        )
+        if '<td' in block.lower()
+    ]
+
     rows: list[LeaderboardRow] = []
     for row_match in row_re.finditer(table_html):
         _, model_cell, score_text = row_match.groups()
@@ -807,6 +819,21 @@ def _extract_section_rows(
         )
     if not rows:
         raise ValueError(f'No leaderboard rows found for: {section_title}')
+    if len(rows) != len(data_rows):
+        raise ValueError(
+            f'Read {len(rows)} of {len(data_rows)} data rows in section: '
+            f'{section_title}'
+        )
+    repeated = sorted(
+        name
+        for name, count in Counter(r.model_name for r in rows).items()
+        if count > 1
+    )
+    if repeated:
+        raise ValueError(
+            f'Duplicate model rows in section {section_title}: '
+            f'{", ".join(repeated)}'
+        )
     return rows
 
 
@@ -990,8 +1017,9 @@ def _build_mcq_result(
             evaluation_description=(
                 'Accuracy on the LEXam four-choice multiple-choice questions '
                 f'({MCQ_CONFIG}, n={MCQ_SAMPLES}); the published leaderboard '
-                'column does not cover the 8/16/32-choice configs '
-                '(0-100 scale).'
+                'column does not cover the 8/16/32-choice configs. Reported '
+                'as a proportion on the 0-1 scale of the registry metric; the '
+                'leaderboard publishes the same value as a percentage.'
             ),
             lower_is_better=False,
             score_type=ScoreType.continuous,
