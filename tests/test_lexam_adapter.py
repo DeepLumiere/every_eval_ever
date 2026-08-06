@@ -15,6 +15,8 @@ from every_eval_ever.adapters.lexam.adapter import (
     OPEN_QUESTION_METRIC,
     OPEN_QUESTIONS_SAMPLES,
     OPEN_SECTION_TITLE,
+    REASONING_EXTRA_DETAILS,
+    REASONING_TEMPERATURE,
     REGISTRY_HARNESS,
     LEXamAdapter,
     _clean_model_name,
@@ -302,16 +304,77 @@ def test_deepseek_api_modes_share_one_model_id() -> None:
     assert exp != chat.model_id
 
 
-def test_reasoning_is_only_set_where_the_source_states_the_mode() -> None:
-    with_reasoning = {
-        label
-        for label, identity in _MODEL_IDENTITIES.items()
-        if identity.reasoning is not None
+def test_inference_settings_follow_the_papers_model_group() -> None:
+    """The group is not presentation: it decides harness and settings.
+
+    Paper §3.3 lists the three groups and states conventional models ran at
+    temperature 0 / 4096 tokens under lighteval, while reasoning models are
+    unsupported by lighteval and ran at 8192 tokens on official settings;
+    appendix F gives the per-model departures and how each group was served.
+    """
+    logs = {
+        log.model_info.name: log
+        for log in LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
     }
-    assert with_reasoning == {
-        'DeepSeek-V3.2-chat',
-        'DeepSeek-V3.2-reasoner',
+
+    # GPT-5 is a reasoning model: 8192 tokens, reasoning on, harness unnamed.
+    gpt5 = logs['GPT-5']
+    args = gpt5.evaluation_results[0].generation_config.generation_args
+    assert args.reasoning is True
+    assert args.max_tokens == 8192
+    assert gpt5.eval_library.name == 'unknown'
+    assert 'lighteval' in gpt5.eval_library.additional_details['harness_note']
+
+    # GPT-4o-mini is conventional: temperature 0, 4096 tokens, via lighteval.
+    mini = logs['GPT-4o-mini']
+    args = mini.evaluation_results[0].generation_config.generation_args
+    assert args.reasoning is False
+    assert args.temperature == 0.0
+    assert args.max_tokens == 4096
+    assert mini.eval_library.name == 'lighteval'
+
+    # The two DeepSeek API modes separate on the group, not on a special case.
+    assert _MODEL_IDENTITIES['DeepSeek-V3.2-reasoner'].reasoning is True
+    assert _MODEL_IDENTITIES['DeepSeek-V3.2-chat'].reasoning is False
+
+
+def test_per_model_departures_from_appendix_f() -> None:
+    ids = _MODEL_IDENTITIES
+    assert ids['DeepSeek-R1'].group == 'reasoning'
+    assert REASONING_TEMPERATURE['DeepSeek-R1'] == 0.6
+    assert REASONING_TEMPERATURE['QwQ-32B'] == 0.6
+    assert REASONING_EXTRA_DETAILS['O3-mini'] == {'reasoning_effort': 'high'}
+    assert REASONING_EXTRA_DETAILS['Claude-3.7-Sonnet'] == {
+        'reasoning_budget_tokens': '4096'
     }
+
+
+def test_deployment_is_derived_not_unknown() -> None:
+    """Appendix F says how each group was served, so nothing ships 'unknown'."""
+    logs = LEXamAdapter().fetch_leaderboard(html=FIXTURE_HTML)
+    for log in logs:
+        details = log.model_info.additional_details
+        assert details['deployment_type'] in {
+            'self_deployed',
+            'externally_managed',
+        }
+
+    # Small open models ran locally under vLLM; closed ones on an official API.
+    local = _MODEL_IDENTITIES['Phi-4']
+    assert local.deployment_type == 'self_deployed'
+    assert local.inference_engine.name == 'vLLM'
+    assert local.inference_platform is None
+
+    hosted = _MODEL_IDENTITIES['GPT-5']
+    assert hosted.deployment_type == 'externally_managed'
+    assert hosted.inference_platform == 'openai'
+    assert hosted.inference_engine is None
+
+    # "For the rest of LLMs, we use the Together AI API."
+    assert _MODEL_IDENTITIES['Qwen3-235B'].inference_platform == 'together_ai'
+    assert _MODEL_IDENTITIES['Apertus-70B'].inference_platform == 'together_ai'
+    # DeepSeek's own API endpoints name the two modes.
+    assert _MODEL_IDENTITIES['DeepSeek-V3.2-chat'].inference_platform == 'deepseek'
 
 
 def test_standard_error_attached_only_when_score_still_matches() -> None:

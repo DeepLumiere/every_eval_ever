@@ -48,6 +48,7 @@ from every_eval_ever.eval_types import (
     EvaluatorRelationship,
     GenerationArgs,
     GenerationConfig,
+    InferenceEngine,
     JudgeConfig,
     LlmScoring,
     MetricConfig,
@@ -187,6 +188,30 @@ Your Judgment:
 # instead of asserting a wrong one.
 JUDGE_AGGREGATION = 'pointwise_minimum'
 
+# Inference settings, paper §3.3 and appendix F. The paper's model group decides
+# them, so they are recorded per group rather than left unknown.
+PAPER_SETTINGS_CITATION = (
+    'arXiv:2505.12864v7 §3.3 (Inference Hyperparameters) and appendix F '
+    '(Inference Hyperparameters, Costs, and LLM Endpoint)'
+)
+CONVENTIONAL_MAX_TOKENS = 4096
+CONVENTIONAL_TEMPERATURE = 0.0
+REASONING_MAX_TOKENS = 8192
+# Per-model departures appendix F spells out.
+REASONING_TEMPERATURE = {'DeepSeek-R1': 0.6, 'QwQ-32B': 0.6}
+REASONING_EXTRA_DETAILS = {
+    'O3-mini': {'reasoning_effort': 'high'},
+    'Claude-3.7-Sonnet': {'reasoning_budget_tokens': '4096'},
+}
+# §3.3: lighteval standardizes the conventional models; the reasoning models are
+# not supported by it, and the paper does not name what ran them instead.
+LIGHTEVAL_HARNESS = 'lighteval'
+REASONING_HARNESS_NOTE = (
+    'Not lighteval: the paper states reasoning models are unsupported by it '
+    'and were run on the official recommended settings, without naming the '
+    'harness. LEXam ships litellm_eval.py for that path.'
+)
+
 _MEDAL_RE = re.compile(r'[\U0001f947-\U0001f949]')
 
 
@@ -288,9 +313,32 @@ class ModelIdentity:
     availability: str
     id_source: str
     registry_canonical_id: str | None = None
-    reasoning: bool | None = None
     api_model_name: str | None = None
     note: str | None = None
+    #: §F LLM Endpoints. `None` means it was served locally under vLLM.
+    inference_platform: str | None = None
+    #: The paper's model group (§3.3 Model Selection). Not presentation: it
+    #: decides the harness, the generation settings and, with §F, how the model
+    #: was served.
+    group: str = 'large'
+
+    @property
+    def reasoning(self) -> bool:
+        return self.group == 'reasoning'
+
+    @property
+    def deployment_type(self) -> str:
+        """§F: small conventional LLMs ran locally, everything else on an API."""
+        return 'self_deployed' if self.inference_platform is None else (
+            'externally_managed'
+        )
+
+    @property
+    def inference_engine(self) -> InferenceEngine | None:
+        """§F: the locally served models ran under vLLM; no version given."""
+        if self.inference_platform is not None:
+            return None
+        return InferenceEngine(name='vLLM')
 
     @property
     def developer(self) -> str:
@@ -312,36 +360,48 @@ _MODEL_IDENTITIES = {
         developer_org_id='swiss-ai-initiative',
         availability='open_weights',
         id_source='registry_alias',
+        group='small',
+        inference_platform='together_ai',
     ),
     'Apertus-8B': ModelIdentity(
         model_id='swiss-ai-initiative/apertus-8b',
         developer_org_id='swiss-ai-initiative',
         availability='open_weights',
         id_source='registry_alias',
+        group='small',
+        inference_platform=None,
     ),
     'Claude-3.7-Sonnet': ModelIdentity(
         model_id='anthropic/claude-sonnet-3.7',
         developer_org_id='anthropic',
         availability='closed_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='anthropic',
     ),
     'Claude-4.5-Sonnet': ModelIdentity(
         model_id='anthropic/claude-sonnet-4.5',
         developer_org_id='anthropic',
         availability='closed_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='anthropic',
     ),
     'DeepSeek-R1': ModelIdentity(
         model_id='deepseek-ai/DeepSeek-R1',
         developer_org_id='deepseek',
         availability='open_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='together_ai',
     ),
     'DeepSeek-V3': ModelIdentity(
         model_id='deepseek-ai/DeepSeek-V3',
         developer_org_id='deepseek',
         availability='open_weights',
         id_source='registry_alias',
+        group='large',
+        inference_platform='together_ai',
     ),
     'DeepSeek-V3.2-Exp': ModelIdentity(
         model_id='deepseek/deepseek-v3.2-exp',
@@ -353,24 +413,28 @@ _MODEL_IDENTITIES = {
             'reconciling that against the HF repo is a registry-side curation '
             'pass, not an adapter decision'
         ),
+        group='reasoning',
+        inference_platform='together_ai',
     ),
     'DeepSeek-V3.2-chat': ModelIdentity(
         model_id='deepseek-ai/DeepSeek-V3.2',
         developer_org_id='deepseek',
         availability='open_weights',
         id_source='registry_canonical',
-        reasoning=False,
         api_model_name='deepseek-chat',
         note='deepseek-chat API endpoint = V3.2 non-thinking mode',
+        group='large',
+        inference_platform='deepseek',
     ),
     'DeepSeek-V3.2-reasoner': ModelIdentity(
         model_id='deepseek-ai/DeepSeek-V3.2',
         developer_org_id='deepseek',
         availability='open_weights',
         id_source='registry_canonical',
-        reasoning=True,
         api_model_name='deepseek-reasoner',
         note='deepseek-reasoner API endpoint = V3.2 thinking mode',
+        group='reasoning',
+        inference_platform='deepseek',
     ),
     'EuroLLM-9B-it': ModelIdentity(
         model_id='utter-project/EuroLLM-9B-Instruct',
@@ -378,78 +442,104 @@ _MODEL_IDENTITIES = {
         availability='open_weights',
         id_source='hf_canonical',
         note='registry holds only the base EuroLLM-9B',
+        group='small',
+        inference_platform=None,
     ),
     'GPT-4.1': ModelIdentity(
         model_id='openai/gpt-4.1',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
+        group='large',
+        inference_platform='openai',
     ),
     'GPT-4.1-mini': ModelIdentity(
         model_id='openai/gpt-4.1-mini',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
+        group='small',
+        inference_platform='openai',
     ),
     'GPT-4.1-nano': ModelIdentity(
         model_id='openai/gpt-4.1-nano',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
+        group='small',
+        inference_platform='openai',
     ),
     'GPT-4o': ModelIdentity(
         model_id='openai/gpt-4o',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
+        group='large',
+        inference_platform='openai',
     ),
     'GPT-4o-mini': ModelIdentity(
         model_id='openai/gpt-4o-mini',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
+        group='small',
+        inference_platform='openai',
     ),
     'GPT-5': ModelIdentity(
         model_id='openai/gpt-5',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='openai',
     ),
     'GPT-5-mini': ModelIdentity(
         model_id='openai/gpt-5-mini',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='openai',
     ),
     'GPT-5-nano': ModelIdentity(
         model_id='openai/gpt-5-nano',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='openai',
     ),
     'GPT-OSS-120B': ModelIdentity(
         model_id='openai/gpt-oss-120b',
         developer_org_id='openai',
         availability='open_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='together_ai',
     ),
     'GPT-OSS-20B': ModelIdentity(
         model_id='openai/gpt-oss-20b',
         developer_org_id='openai',
         availability='open_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='together_ai',
     ),
     'Gemini-2.5-Pro': ModelIdentity(
         model_id='google/gemini-2.5-pro',
         developer_org_id='google',
         availability='closed_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='google',
     ),
     'Gemini-3-Pro-preview': ModelIdentity(
         model_id='google/gemini-3-pro-preview',
         developer_org_id='google',
         availability='closed_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='google',
     ),
     'Gemma-2-9B-it': ModelIdentity(
         model_id='google/gemma-2-9b-it',
@@ -457,12 +547,16 @@ _MODEL_IDENTITIES = {
         availability='open_weights',
         id_source='registry_canonical',
         note='label is the instruct variant; the alias resolves to the base model',
+        group='small',
+        inference_platform=None,
     ),
     'Gemma-3-12B-it': ModelIdentity(
         model_id='google/gemma-3-12b-it',
         developer_org_id='google',
         availability='open_weights',
         id_source='registry_alias',
+        group='small',
+        inference_platform=None,
     ),
     'Llama-3.1-405B-it': ModelIdentity(
         model_id='meta/llama-3-1-405b-instruct',
@@ -473,18 +567,24 @@ _MODEL_IDENTITIES = {
             'the registry resolves this label to its API-catalog canonical; '
             'the HF-anchored id is a registry-side reconciliation'
         ),
+        group='large',
+        inference_platform='together_ai',
     ),
     'Llama-3.1-8B-it': ModelIdentity(
         model_id='meta-llama/Llama-3.1-8B-Instruct',
         developer_org_id='meta',
         availability='open_weights',
         id_source='registry_canonical',
+        group='small',
+        inference_platform=None,
     ),
     'Llama-3.3-70B-it': ModelIdentity(
         model_id='meta-llama/Llama-3.3-70B-Instruct',
         developer_org_id='meta',
         availability='open_weights',
         id_source='registry_canonical',
+        group='large',
+        inference_platform='together_ai',
     ),
     'Llama-4-Maverick': ModelIdentity(
         model_id='meta-llama/Llama-4-Maverick-17B-128E',
@@ -492,48 +592,64 @@ _MODEL_IDENTITIES = {
         availability='open_weights',
         id_source='registry_alias',
         note='leaderboard label does not state the Instruct/FP8 variant',
+        group='large',
+        inference_platform='together_ai',
     ),
     'Ministral-8B-it': ModelIdentity(
         model_id='mistralai/ministral-8b-it',
         developer_org_id='mistralai',
         availability='open_weights',
         id_source='registry_alias',
+        group='small',
+        inference_platform=None,
     ),
     'O3-mini': ModelIdentity(
         model_id='openai/o3-mini',
         developer_org_id='openai',
         availability='closed_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='openai',
     ),
     'Phi-4': ModelIdentity(
         model_id='microsoft/phi-4',
         developer_org_id='microsoft',
         availability='open_weights',
         id_source='registry_alias',
+        group='small',
+        inference_platform=None,
     ),
     'QwQ-32B': ModelIdentity(
         model_id='Qwen/QwQ-32B',
         developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='together_ai',
     ),
     'Qwen-2.5-7B-it': ModelIdentity(
         model_id='Qwen/Qwen2.5-7B-Instruct',
         developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_canonical',
+        group='small',
+        inference_platform=None,
     ),
     'Qwen3-235B': ModelIdentity(
         model_id='Qwen/Qwen3-235B-A22B',
         developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='together_ai',
     ),
     'Qwen3-32B': ModelIdentity(
         model_id='Qwen/Qwen3-32B',
         developer_org_id='alibaba',
         availability='open_weights',
         id_source='registry_alias',
+        group='reasoning',
+        inference_platform='together_ai',
     ),
     'Qwen3-Next': ModelIdentity(
         model_id='alibaba/qwen3-next',
@@ -541,6 +657,8 @@ _MODEL_IDENTITIES = {
         availability='open_weights',
         id_source='registry_alias',
         note='registry id is variant-agnostic; HF publishes Instruct and Thinking variants',
+        group='reasoning',
+        inference_platform='together_ai',
     ),
 }
 
@@ -833,7 +951,7 @@ def _build_open_question_result(
             score, label, 'open', OPEN_QUESTION_METRIC
         ),
         source_data=_open_question_source(),
-        generation_config=_generation_config(identity),
+        generation_config=_generation_config(identity, label),
     )
 
 
@@ -861,17 +979,19 @@ def _build_mcq_result(
         ),
         score_details=_score_details(score, label, 'mcq', MCQ_METRIC),
         source_data=_mcq_source(),
-        generation_config=_generation_config(identity),
+        generation_config=_generation_config(identity, label),
     )
 
 
 def _model_details(identity: ModelIdentity, label: str) -> dict[str, str]:
-    """Model provenance, including how the id was resolved."""
+    """Model provenance: how the id resolved, and how the model was served."""
     details = {
-        # LEXam documents both API-served (litellm) and local vLLM evaluation
-        # paths without stating which produced each leaderboard row.
-        'deployment_type': 'unknown',
+        # Appendix F states how each group was served, so this is derived
+        # rather than left unknown.
+        'deployment_type': identity.deployment_type,
+        'deployment_source': PAPER_SETTINGS_CITATION,
         'model_availability': identity.availability,
+        'model_group': identity.group,
         'model_id_resolution': identity.id_source,
         'developer_org_id': identity.developer_org_id,
         'leaderboard_label': label,
@@ -886,15 +1006,50 @@ def _model_details(identity: ModelIdentity, label: str) -> dict[str, str]:
     return details
 
 
-def _generation_config(identity: ModelIdentity) -> GenerationConfig | None:
-    """Only set what the source states: the two DeepSeek API modes."""
-    if identity.reasoning is None:
-        return None
-    return GenerationConfig(
-        generation_args=GenerationArgs(reasoning=identity.reasoning),
-        additional_details={
-            'reasoning_source': DEEPSEEK_MODE_CITATION,
-        },
+def _generation_config(identity: ModelIdentity, label: str) -> GenerationConfig:
+    """The settings the paper states for this model's group.
+
+    Conventional models ran at temperature 0 with a 4096-token limit; reasoning
+    models at an 8192-token limit on their official recommended settings, with
+    the per-model departures appendix F lists. `reasoning` follows the group,
+    which is what separates the two DeepSeek API modes.
+    """
+    details = {'settings_source': PAPER_SETTINGS_CITATION}
+    if identity.reasoning:
+        args = GenerationArgs(
+            reasoning=True,
+            max_tokens=REASONING_MAX_TOKENS,
+            temperature=REASONING_TEMPERATURE.get(label),
+        )
+        details.update(REASONING_EXTRA_DETAILS.get(label, {}))
+    else:
+        args = GenerationArgs(
+            reasoning=False,
+            max_tokens=CONVENTIONAL_MAX_TOKENS,
+            temperature=CONVENTIONAL_TEMPERATURE,
+        )
+    if identity.api_model_name is not None:
+        details['api_mode_source'] = DEEPSEEK_MODE_CITATION
+    return GenerationConfig(generation_args=args, additional_details=details)
+
+
+def _eval_library(identity: ModelIdentity) -> EvalLibrary:
+    """lighteval for the conventional models; unnamed for the reasoning ones."""
+    details = {
+        'benchmark': BENCHMARK_KEY,
+        'leaderboard_url': LEADERBOARD_PAGE_URL,
+        'github': GITHUB_REPO_URL,
+        'harness_source': PAPER_SETTINGS_CITATION,
+        'model_group': identity.group,
+    }
+    if identity.reasoning:
+        details['harness_note'] = REASONING_HARNESS_NOTE
+        return EvalLibrary(name='unknown', version='unknown', additional_details=details)
+    details['lighteval_tasks'] = (
+        'community|lexamoq_open_question, ' f'community|lexammcq_{MCQ_CONFIG}'
+    )
+    return EvalLibrary(
+        name=LIGHTEVAL_HARNESS, version='unknown', additional_details=details
     )
 
 
@@ -955,22 +1110,7 @@ def _build_log(
         # registry re-mapping must not change this record's identity.
         evaluation_id=f'{BENCHMARK_KEY}/{label}/{retrieved_ts}',
         retrieved_timestamp=retrieved_ts,
-        eval_library=EvalLibrary(
-            # The harness, not the benchmark: LEXam documents evaluation
-            # through HuggingFace lighteval community tasks. No library
-            # version is published.
-            name=REGISTRY_HARNESS,
-            version='unknown',
-            additional_details={
-                'benchmark': BENCHMARK_KEY,
-                'leaderboard_url': LEADERBOARD_PAGE_URL,
-                'github': GITHUB_REPO_URL,
-                'lighteval_tasks': (
-                    'community|lexamoq_open_question, '
-                    f'community|lexammcq_{MCQ_CONFIG}'
-                ),
-            },
-        ),
+        eval_library=_eval_library(identity),
         source_metadata=SourceMetadata(
             source_name='LEXam Leaderboard',
             source_type=SourceType.documentation,
@@ -989,6 +1129,8 @@ def _build_log(
             name=label,
             id=identity.model_id,
             developer=identity.developer,
+            inference_platform=identity.inference_platform,
+            inference_engine=identity.inference_engine,
             additional_details=_model_details(identity, label),
         ),
         evaluation_results=evaluation_results,
