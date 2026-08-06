@@ -217,7 +217,17 @@ class MetricSpec:
     canonical_min: float
     canonical_max: float
     percent_divisor: float
-    registry_status: str
+
+    @property
+    def review_status(self) -> str:
+        """The registry's own review status for this metric.
+
+        Read from the pinned snapshot rather than hand-maintained, so a metric
+        that graduates from `draft` to `reviewed` upstream needs a snapshot
+        refresh and no code edit.
+        """
+        metrics = registry_snapshot().get('metrics', {})
+        return metrics.get(self.metric_id, {}).get('review_status', 'unknown')
 
 
 # `accuracy` is an existing reviewed registry metric, canonically a proportion
@@ -231,7 +241,6 @@ MCQ_METRIC = MetricSpec(
     canonical_min=0.0,
     canonical_max=1.0,
     percent_divisor=100.0,
-    registry_status='registered',
 )
 
 # The judge score has no canonical global equivalent. The registry's existing
@@ -246,7 +255,6 @@ OPEN_QUESTION_METRIC = MetricSpec(
     canonical_min=0.0,
     canonical_max=100.0,
     percent_divisor=1.0,
-    registry_status='proposed',
 )
 
 
@@ -737,7 +745,7 @@ def _open_question_judge_scoring() -> LlmScoring:
 
 def _metric_details(spec: MetricSpec) -> dict[str, str]:
     return {
-        'metric_registry_status': spec.registry_status,
+        'metric_registry_review_status': spec.review_status,
         'bound_registry_revision': REGISTRY_REVISION,
         'leaderboard_reported_unit': 'percent',
     }

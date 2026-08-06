@@ -99,6 +99,26 @@ Provenance decisions worth knowing:
       --registry /path/to/eval-card-registry
   ```
 
+  Each metric reports the registry's own `review_status`, read from the
+  snapshot, so a metric promoted from `draft` to `reviewed` upstream needs a
+  refresh and no code change.
+
+Submitting the generated records to the datastore (after the registry entities
+are merged, so no record cites a `draft` metric):
+
+```python
+from huggingface_hub import HfApi
+
+HfApi().upload_folder(
+    folder_path='data/lexam',
+    path_in_repo='data/lexam',
+    repo_id='evaleval/EEE_datastore',
+    repo_type='dataset',
+    commit_message='[Submission] Add LEXam leaderboard',
+    create_pr=True,
+)
+```
+
 
 ## Notes
 

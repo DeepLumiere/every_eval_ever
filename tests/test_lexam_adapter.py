@@ -155,19 +155,24 @@ def test_metric_ids_are_registry_canonical() -> None:
     results = _gpt5_results()
 
     assert MCQ_METRIC.metric_id == 'accuracy'
-    assert MCQ_METRIC.registry_status == 'registered'
+    assert MCQ_METRIC.review_status == 'reviewed'
     assert results[MCQ_EVAL_NAME].metric_config.metric_id == 'accuracy'
     assert results[MCQ_EVAL_NAME].metric_config.metric_kind == 'accuracy'
 
     # No canonical global judge metric exists; this one is a registry-shaped
     # slug proposed alongside the adapter, not an ad-hoc namespaced id.
     assert OPEN_QUESTION_METRIC.metric_id == 'lexam-open-question-judge-score'
-    assert OPEN_QUESTION_METRIC.registry_status == 'proposed'
+    # Read from the registry, not hand-set: flips on its own once upstream
+    # promotes the entry.
+    assert OPEN_QUESTION_METRIC.review_status in {'draft', 'reviewed'}
     assert results[OPEN_EVAL_NAME].metric_config.metric_kind == 'judge_score'
     for result in results.values():
         details = result.metric_config.additional_details
         assert details['bound_registry_revision']
-        assert details['metric_registry_status'] in {'registered', 'proposed'}
+        assert details['metric_registry_review_status'] in {
+            'draft',
+            'reviewed',
+        }
 
 
 def test_fetch_leaderboard_open_metric_has_llm_scoring() -> None:
