@@ -344,12 +344,15 @@ _MODEL_IDENTITIES = {
         id_source='registry_alias',
     ),
     'DeepSeek-V3.2-Exp': ModelIdentity(
-        model_id='deepseek-ai/DeepSeek-V3.2-Exp',
+        model_id='deepseek/deepseek-v3.2-exp',
         developer_org_id='deepseek',
         availability='open_weights',
-        id_source='hf_canonical',
-        registry_canonical_id='deepseek/deepseek-v3-2-exp',
-        note='registry has only an API-catalog draft for this checkpoint',
+        id_source='registry_alias',
+        note=(
+            'the registry resolves this label to its API-catalog canonical; '
+            'reconciling that against the HF repo is a registry-side curation '
+            'pass, not an adapter decision'
+        ),
     ),
     'DeepSeek-V3.2-chat': ModelIdentity(
         model_id='deepseek-ai/DeepSeek-V3.2',
@@ -462,11 +465,14 @@ _MODEL_IDENTITIES = {
         id_source='registry_alias',
     ),
     'Llama-3.1-405B-it': ModelIdentity(
-        model_id='meta-llama/Llama-3.1-405B-Instruct',
+        model_id='meta/llama-3-1-405b-instruct',
         developer_org_id='meta',
         availability='open_weights',
-        id_source='hf_canonical',
-        note='registry holds only Together "Turbo" drafts',
+        id_source='registry_alias',
+        note=(
+            'the registry resolves this label to its API-catalog canonical; '
+            'the HF-anchored id is a registry-side reconciliation'
+        ),
     ),
     'Llama-3.1-8B-it': ModelIdentity(
         model_id='meta-llama/Llama-3.1-8B-Instruct',

@@ -294,11 +294,12 @@ def test_deepseek_api_modes_share_one_model_id() -> None:
     assert reasoner.reasoning is True
     assert chat.api_model_name == 'deepseek-chat'
     assert reasoner.api_model_name == 'deepseek-reasoner'
-    # The experimental release is a different checkpoint.
-    assert (
-        _MODEL_IDENTITIES['DeepSeek-V3.2-Exp'].model_id
-        == 'deepseek-ai/DeepSeek-V3.2-Exp'
-    )
+    # The experimental release is a different checkpoint. Its id is the one
+    # the registry resolves the label to, which is its API-catalog canonical
+    # rather than the HF repo id — reconciling those is a registry-side pass.
+    exp = _MODEL_IDENTITIES['DeepSeek-V3.2-Exp'].model_id
+    assert exp == 'deepseek/deepseek-v3.2-exp'
+    assert exp != chat.model_id
 
 
 def test_reasoning_is_only_set_where_the_source_states_the_mode() -> None:
