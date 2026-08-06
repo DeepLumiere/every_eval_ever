@@ -152,6 +152,35 @@ HfApi().upload_folder(
 )
 ```
 
+Record filenames are fresh uuids on every run, so a second `upload_folder` onto
+an open submission PR *adds* another copy of every model rather than replacing
+it. To update a submission, delete the folder and add the new records in one
+commit:
+
+```python
+from pathlib import Path
+
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
+
+records = sorted(Path('data/lexam').rglob('*.json'))
+HfApi().create_commit(
+    repo_id='evaleval/EEE_datastore',
+    repo_type='dataset',
+    revision='refs/pr/<n>',
+    commit_message='Update LEXam records',
+    operations=[
+        CommitOperationDelete(path_in_repo='data/lexam/', is_folder=True),
+        *(
+            CommitOperationAdd(
+                path_in_repo=f'data/lexam/{path.relative_to("data/lexam")}',
+                path_or_fileobj=str(path),
+            )
+            for path in records
+        ),
+    ],
+)
+```
+
 
 ## Notes
 
