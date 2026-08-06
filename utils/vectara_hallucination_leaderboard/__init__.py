@@ -1,1 +1,0 @@
-"""Vectara Hallucination Leaderboard adapter."""
