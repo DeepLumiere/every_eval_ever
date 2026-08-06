@@ -34,6 +34,7 @@ Each adapter is run with `uv run python -m every_eval_ever.adapters.<name>.adapt
 | `terminal_bench_2` | tbench.ai | Fetches Terminal-Bench 2.0 agentic coding benchmark results. |
 | `hle` | Scale SEAL leaderboard | Converts the Scale SEAL Humanity's Last Exam leaderboard into `data/hle/`. Emits per-model accuracy (with 95% CI) and calibration error. |
 | `mmlu_pro` | TIGER-Lab leaderboard CSV | Converts the MMLU-Pro leaderboard (`TIGER-Lab/mmlu_pro_leaderboard_submission`) into `data/mmlu-pro/`. Emits per-model overall + 14 per-subject accuracies. |
+| `vectara_hallucination_leaderboard` | HuggingFace (`vectara/results`) | Converts the Vectara Hallucination Leaderboard result files, pinned to a source commit, into `data/vectara-hallucination-leaderboard/`. Emits 4 aggregate metrics plus per-category and per-text-complexity breakdowns (40 scores per model). |
 
 ### Mercor Evaluation Exports
 
@@ -128,3 +129,29 @@ Validate generated records with:
 uv run python -m every_eval_ever validate \
   '/tmp/eee-vals-ai-smoke/data/vals-ai/*/*/*.json*'
 ```
+
+### Vectara Hallucination Leaderboard
+
+The adapter enumerates every per-model result file in `vectara/results` at the
+pinned `SOURCE_COMMIT` and emits one record per model. Run a live export
+outside the repository:
+
+```bash
+uv run python -m every_eval_ever.adapters.vectara_hallucination_leaderboard.adapter \
+  --output-dir /tmp/eee-vectara/data/vectara-hallucination-leaderboard \
+  --save-raw-json /tmp/eee-vectara-raw.json
+```
+
+Replay the saved snapshot without hitting the network:
+
+```bash
+uv run python -m every_eval_ever.adapters.vectara_hallucination_leaderboard.adapter \
+  --input-json /tmp/eee-vectara-raw.json \
+  --output-dir /tmp/eee-vectara-replay/data/vectara-hallucination-leaderboard
+```
+
+Bump `SOURCE_COMMIT` to pick up a newer leaderboard run. The evaluated corpus
+is private, so each result records the public result file as provenance rather
+than a redistributable dataset. The pinned files record no serving platform, so
+`deployment_type` stays `unknown`; `model_availability` is derived from the
+source's `accessibility` annotation.
