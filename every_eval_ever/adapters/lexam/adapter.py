@@ -312,7 +312,7 @@ _MODEL_IDENTITIES = {
         id_source='registry_alias',
     ),
     'Claude-3.7-Sonnet': ModelIdentity(
-        model_id='anthropic/Claude-3.7-Sonnet',
+        model_id='anthropic/claude-sonnet-3.7',
         developer_org_id='anthropic',
         availability='closed_weights',
         id_source='registry_alias',

@@ -35,6 +35,7 @@
     "Qwen/Qwen3-235B-A22B",
     "Qwen/Qwen3-32B",
     "alibaba/qwen3-next",
+    "anthropic/claude-sonnet-3.7",
     "anthropic/claude-sonnet-4.5",
     "deepseek-ai/DeepSeek-R1",
     "deepseek-ai/DeepSeek-V3",
@@ -66,7 +67,5 @@
     "swiss-ai-initiative/apertus-8b",
     "utter-project/EuroLLM-9B-Instruct"
   ],
-  "models_absent_from_seed": [
-    "anthropic/Claude-3.7-Sonnet"
-  ]
+  "models_absent_from_seed": []
 }
