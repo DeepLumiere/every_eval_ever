@@ -135,13 +135,42 @@ def main(argv: list[str] | None = None) -> int:
         help='Path to a local eval-card-registry checkout.',
     )
     parser.add_argument('--output', type=Path, default=SNAPSHOT_PATH)
+    parser.add_argument(
+        '--check',
+        action='store_true',
+        help=(
+            'Exit non-zero if the committed snapshot differs from the given '
+            'registry, without writing. Use this after a registry PR merges '
+            'to see whether the pin is stale.'
+        ),
+    )
     args = parser.parse_args(argv)
 
     snapshot = build_snapshot(args.registry)
-    args.output.write_text(
-        json.dumps(snapshot, indent=2, sort_keys=True) + '\n',
-        encoding='utf-8',
-    )
+    rendered = json.dumps(snapshot, indent=2, sort_keys=True) + '\n'
+
+    if args.check:
+        current = (
+            args.output.read_text(encoding='utf-8')
+            if args.output.exists()
+            else ''
+        )
+        if current == rendered:
+            print(f'{args.output} matches {args.registry}')
+            return 0
+        committed_revision = 'missing'
+        if current:
+            committed_revision = (
+                json.loads(current).get('_meta', {}).get('registry_revision', '?')
+            )
+        print(
+            f'{args.output} is stale: pinned at {committed_revision}, '
+            f"registry is at {snapshot['_meta']['registry_revision']}. "
+            'Re-run without --check to refresh.'
+        )
+        return 1
+
+    args.output.write_text(rendered, encoding='utf-8')
     print(f'wrote {args.output}')
     for key in (
         'models_absent_from_seed',

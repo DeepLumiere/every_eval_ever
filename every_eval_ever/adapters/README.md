@@ -101,7 +101,14 @@ Provenance decisions worth knowing:
 
   Each metric reports the registry's own `review_status`, read from the
   snapshot, so a metric promoted from `draft` to `reviewed` upstream needs a
-  refresh and no code change.
+  refresh and no code change. `--check` answers "is the pin stale?" without
+  writing — it exits non-zero and names both revisions, which is the thing to
+  run after a registry PR merges:
+
+  ```bash
+  uv run python -m every_eval_ever.adapters.lexam.refresh_registry_snapshot \
+      --registry /path/to/eval-card-registry --check
+  ```
 
 Submitting the generated records to the datastore (after the registry entities
 are merged, so no record cites a `draft` metric):
