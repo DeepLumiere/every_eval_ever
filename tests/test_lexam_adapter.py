@@ -198,8 +198,9 @@ def test_judge_scoring_records_the_published_prompt_template() -> None:
     assert '{question_fact}' in llm_scoring.input_prompt
     assert '{ref_answer}' in llm_scoring.input_prompt
     assert '{model_answer}' in llm_scoring.input_prompt
-    assert 'Act as a Judge' in (
-        llm_scoring.additional_details['judge_system_prompt']
+    assert (
+        'Act as a Judge'
+        in (llm_scoring.additional_details['judge_system_prompt'])
     )
 
 
@@ -231,7 +232,9 @@ def test_every_identity_declares_availability_and_id_provenance() -> None:
         'hf_canonical',
     }
     for label, identity in _MODEL_IDENTITIES.items():
-        assert identity.availability in {'open_weights', 'closed_weights'}, label
+        assert identity.availability in {'open_weights', 'closed_weights'}, (
+            label
+        )
         assert identity.id_source in allowed_sources, label
         assert identity.model_id.startswith(f'{identity.developer}/'), label
         assert identity.developer_org_id, label
@@ -426,7 +429,9 @@ def test_deployment_is_derived_not_unknown() -> None:
     assert _MODEL_IDENTITIES['Qwen3-235B'].inference_platform == 'together_ai'
     assert _MODEL_IDENTITIES['Apertus-70B'].inference_platform == 'together_ai'
     # DeepSeek's own API endpoints name the two modes.
-    assert _MODEL_IDENTITIES['DeepSeek-V3.2-chat'].inference_platform == 'deepseek'
+    assert (
+        _MODEL_IDENTITIES['DeepSeek-V3.2-chat'].inference_platform == 'deepseek'
+    )
 
 
 def test_standard_error_attached_only_when_score_still_matches() -> None:
@@ -438,16 +443,23 @@ def test_standard_error_attached_only_when_score_still_matches() -> None:
     # The MCQ standard error is rescaled with its score onto [0, 1].
     mcq_uncertainty = results[MCQ_EVAL_NAME].score_details.uncertainty
     assert mcq_uncertainty.standard_error.value == 0.0117
-    assert 'arXiv' in results[OPEN_EVAL_NAME].score_details.details[
-        'standard_error_source'
-    ]
+    assert (
+        'arXiv'
+        in results[OPEN_EVAL_NAME].score_details.details[
+            'standard_error_source'
+        ]
+    )
 
     # A score the paper never reported gets no standard error.
-    moved = FIXTURE_HTML.replace('<strong>70.20</strong>', '<strong>70.21</strong>')
+    moved = FIXTURE_HTML.replace(
+        '<strong>70.20</strong>', '<strong>70.21</strong>'
+    )
     logs = LEXamAdapter().fetch_leaderboard(html=moved)
     gpt5 = next(log for log in logs if log.model_info.name == 'GPT-5')
     open_result = next(
-        r for r in gpt5.evaluation_results if r.evaluation_name == OPEN_EVAL_NAME
+        r
+        for r in gpt5.evaluation_results
+        if r.evaluation_name == OPEN_EVAL_NAME
     )
     assert open_result.score_details.score == 70.21
     assert open_result.score_details.uncertainty.standard_error is None

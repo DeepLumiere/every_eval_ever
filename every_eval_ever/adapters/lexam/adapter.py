@@ -11,12 +11,11 @@ Scope of the published leaderboard (https://lexam-benchmark.github.io/):
 Model identity comes from the eval-card-registry; every record reports how it
 was resolved in `model_info.additional_details.model_id_resolution`.
 
-`DeepSeek-V3.2-chat` and `DeepSeek-V3.2-reasoner` are not two checkpoints:
-per DeepSeek's API changelog (2025-12-01) `deepseek-chat` and
-`deepseek-reasoner` are the non-thinking and thinking modes of the same
-`DeepSeek-V3.2` release, which matches the paper listing `-reasoner` under
-reasoning models and `-chat` under large (non-reasoning) models. Both rows
-therefore share `model_info.id` and are distinguished by
+`DeepSeek-V3.2-chat` and `DeepSeek-V3.2-reasoner` are not two checkpoints: per
+DeepSeek's API changelog (2025-12-01) they are the non-thinking and thinking
+modes of one `DeepSeek-V3.2` release, matching the paper listing `-reasoner`
+under reasoning models and `-chat` under large ones. Both rows share
+`model_info.id` and differ in
 `generation_config.generation_args.reasoning`.
 
 Standard errors are not on the leaderboard page; they come from the paper's
@@ -188,8 +187,8 @@ Your Judgment:
 # instead of asserting a wrong one.
 JUDGE_AGGREGATION = 'pointwise_minimum'
 
-# Inference settings, paper §3.3 and appendix F. The paper's model group decides
-# them, so they are recorded per group rather than left unknown.
+# Inference settings, paper §3.3 and appendix F, which state them per model
+# group (Reasoning / Large / Small).
 PAPER_SETTINGS_CITATION = (
     'arXiv:2505.12864v7 §3.3 (Inference Hyperparameters) and appendix F '
     '(Inference Hyperparameters, Costs, and LLM Endpoint)'
@@ -198,9 +197,8 @@ CONVENTIONAL_MAX_TOKENS = 4096
 CONVENTIONAL_TEMPERATURE = 0.0
 REASONING_MAX_TOKENS = 8192
 # LEXam's own runner pins the served model string and the sampling arguments for
-# the models it covers. Its snapshot predates the post-paper leaderboard rows, so
-# it names only part of the table; where it does name a model it is the most
-# primary statement of what was actually sent to which endpoint.
+# the models it covers. It predates the post-paper leaderboard rows, so it names
+# only part of the table.
 RUNNER_CONFIG_CITATION = (
     'LEXam-Benchmark/LEXam litellm_eval.py (MODEL_DICT, GENE_ARGS_DICT)'
 )
@@ -218,10 +216,9 @@ REASONING_EXTRA_DETAILS = {
     'Claude-3.7-Sonnet': {'reasoning_budget_tokens': '4096'},
 }
 # §3.3 says lighteval standardizes the conventional models and that the
-# reasoning models were unsupported by it at the time of writing. Asked which
-# harness produced the current rows, a LEXam author confirmed on the converter
-# PR that they evaluated with lighteval, so every row names it and the reasoning
-# rows carry the paper's caveat rather than reporting an unknown harness.
+# reasoning models were unsupported by it at the time of writing; a LEXam author
+# confirmed on the converter PR that the current rows were evaluated with
+# lighteval.
 LIGHTEVAL_HARNESS = 'lighteval'
 MAINTAINER_HARNESS_CITATION = (
     'evaleval/every_eval_ever#160 (comment 5202315911): "Yes, we evaluated '
@@ -249,12 +246,10 @@ class LeaderboardRow:
 class MetricSpec:
     """One metric as the eval-card-registry defines it.
 
-    `metric_id` is the registry's canonical metric id, which the schema asks
-    for whenever one applies ("Use a canonical global id when applicable ...
-    For benchmark/leaderboard-specific metrics, use a namespaced id").
-    Bounds and direction come from the registry entry rather than from
-    whatever scale the leaderboard happened to print, and `percent_divisor`
-    maps the published percentage onto that canonical scale.
+    `metric_id` is the registry's canonical metric id. Bounds and direction
+    come from the registry entry rather than from the scale the leaderboard
+    prints, and `percent_divisor` maps the published percentage onto the
+    canonical scale.
     """
 
     metric_id: str
@@ -267,12 +262,7 @@ class MetricSpec:
 
     @property
     def review_status(self) -> str:
-        """The registry's own review status for this metric.
-
-        Read from the pinned snapshot rather than hand-maintained, so a metric
-        that graduates from `draft` to `reviewed` upstream needs a snapshot
-        refresh and no code edit.
-        """
+        """The registry's own review status, read from the pinned snapshot."""
         metrics = registry_snapshot().get('metrics', {})
         return metrics.get(self.metric_id, {}).get('review_status', 'unknown')
 
@@ -355,9 +345,9 @@ class ModelIdentity:
     @property
     def deployment_type(self) -> str:
         """§F: small conventional LLMs ran locally, everything else on an API."""
-        return 'self_deployed' if self.inference_platform is None else (
-            'externally_managed'
-        )
+        if self.inference_platform is None:
+            return 'self_deployed'
+        return 'externally_managed'
 
     @property
     def inference_engine(self) -> InferenceEngine | None:
@@ -368,14 +358,10 @@ class ModelIdentity:
 
     @property
     def developer(self) -> str:
-        """Developer for this model, via the repo-wide helper.
+        """Developer for this model, via the repo-wide `get_developer` helper.
 
-        Deliberately not a private mapping: `helpers.get_developer` owns the
-        repo's developer strings, and a per-adapter map is how the datastore
-        ended up with one model under two orgs. For an id carrying an org
-        prefix the helper returns that prefix, which is also what the datastore
-        path is derived from — `test_developer_matches_the_datastore_path`
-        keeps the two from drifting apart.
+        For an id carrying an org prefix the helper returns that prefix, which
+        is also what the datastore path is derived from.
         """
         return get_developer(self.model_id)
 
@@ -794,9 +780,7 @@ def _extract_section_rows(
 
     table_end = html.find('</table>', table_start, section_end)
     if table_end == -1:
-        raise ValueError(
-            f'Table not closed within section: {section_title}'
-        )
+        raise ValueError(f'Table not closed within section: {section_title}')
 
     table_html = html[table_start:table_end]
     row_re = re.compile(
@@ -927,22 +911,13 @@ def _score_details(
 ) -> ScoreDetails:
     """Score on the metric's canonical scale, plus the published uncertainty.
 
-    Two independent conversions happen here.
+    The leaderboard reports both columns as percentages; the canonical scale
+    comes from the metric's registry entry, so the MCQ column is divided onto
+    `[0, 1]` and the judge column is left on `[0, 100]`. The raw percentage is
+    kept in `details` either way.
 
-    *Scale*: the leaderboard reports both columns as percentages, but the
-    canonical scale belongs to the **metric**, taken from its
-    eval-card-registry entry — `accuracy` is a proportion `[0, 1]` registry
-    wide, while benchmark-specific judge scores such as
-    `mmau-pro-open-ended-judge-score` are `[0, 100]`. So the MCQ column is
-    divided onto `[0, 1]` and the judge column is left as published, and the
-    raw percentage is kept in `details` either way.
-
-    *Uncertainty*: the leaderboard HTML publishes none, so the bootstrapped
-    standard error comes from the paper's Table 1 / Table 10. It is attached
-    only while the scraped score still equals the score the paper reports for
-    that model, so a leaderboard update drops the standard error rather than
-    pairing it with a number it was never computed for. It is a spread in the
-    same units as the score, so it is rescaled with it.
+    Standard errors come from the paper's tables and are attached only while
+    the scraped score still equals the paper's, rescaled with the score.
     """
     published_percent = round(score, 2)
     samples = OPEN_QUESTIONS_SAMPLES if section == 'open' else MCQ_SAMPLES
@@ -1033,8 +1008,6 @@ def _build_mcq_result(
 def _model_details(identity: ModelIdentity, label: str) -> dict[str, str]:
     """Model provenance: how the id resolved, and how the model was served."""
     details = {
-        # Appendix F states how each group was served, so this is derived
-        # rather than left unknown.
         'deployment_type': identity.deployment_type,
         'deployment_source': PAPER_SETTINGS_CITATION,
         'model_availability': identity.availability,
@@ -1107,7 +1080,7 @@ def _eval_library(identity: ModelIdentity) -> EvalLibrary:
         details['harness_note'] = REASONING_HARNESS_NOTE
         details['settings_source'] = PAPER_SETTINGS_CITATION
     details['lighteval_tasks'] = (
-        'community|lexamoq_open_question, ' f'community|lexammcq_{MCQ_CONFIG}'
+        f'community|lexamoq_open_question, community|lexammcq_{MCQ_CONFIG}'
     )
     return EvalLibrary(
         name=LIGHTEVAL_HARNESS, version='unknown', additional_details=details
@@ -1303,9 +1276,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def export(
-    logs: list[EvaluationLog], output_dir: Path | str
-) -> list[Path]:
+def export(logs: list[EvaluationLog], output_dir: Path | str) -> list[Path]:
     return publish_evaluation_logs(
         logs, output_dir, [str(uuid.uuid4()) for _ in logs]
     )
@@ -1326,8 +1297,7 @@ def run(args: argparse.Namespace) -> int:
     if result.failures:
         report_path = save_failure_report(
             result,
-            args.failure_report
-            or default_failure_report_path(args.output_dir),
+            args.failure_report or default_failure_report_path(args.output_dir),
         )
         print(f'Failure report: {report_path}')
         result.raise_if_incomplete()

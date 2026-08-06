@@ -63,12 +63,14 @@ def build_snapshot(registry: Path) -> dict[str, Any]:
     model_ids = {e['id'] for e in core['entries']}
     for source in sorted((seed / 'models' / 'sources').glob('*.yaml')):
         loaded = _load(source)
-        entries = loaded.get('entries', loaded) if isinstance(loaded, dict) else loaded
+        entries = (
+            loaded.get('entries', loaded)
+            if isinstance(loaded, dict)
+            else loaded
+        )
         if isinstance(entries, list):
             model_ids |= {
-                e['id']
-                for e in entries
-                if isinstance(e, dict) and 'id' in e
+                e['id'] for e in entries if isinstance(e, dict) and 'id' in e
             }
     model_ids -= set(core.get('skip_source_ids') or [])
 
@@ -161,11 +163,13 @@ def main(argv: list[str] | None = None) -> int:
         committed_revision = 'missing'
         if current:
             committed_revision = (
-                json.loads(current).get('_meta', {}).get('registry_revision', '?')
+                json.loads(current)
+                .get('_meta', {})
+                .get('registry_revision', '?')
             )
         print(
             f'{args.output} is stale: pinned at {committed_revision}, '
-            f"registry is at {snapshot['_meta']['registry_revision']}. "
+            f'registry is at {snapshot["_meta"]["registry_revision"]}. '
             'Re-run without --check to refresh.'
         )
         return 1
