@@ -64,6 +64,7 @@ HF_TREE_API = (
     f"https://huggingface.co/api/datasets/{SOURCE_REPO}/tree/{SOURCE_COMMIT}"
 )
 RESULT_FILENAME_RE = re.compile(r"^results_(?P<timestamp>.+)\.json$")
+TREE_PAGE_LIMIT = 1000
 
 SCORING_MODEL = "Vectara HHEM-2.3"
 EVAL_DATASET_NAME = f"{SRC} private evaluation corpus"
@@ -188,9 +189,6 @@ def source_url(source_path: str) -> str:
     )
 
 
-TREE_PAGE_LIMIT = 1000
-
-
 def list_result_files() -> list[str]:
     """List every pinned per-model result file in the source repository."""
     url = f"{HF_TREE_API}?recursive=true&limit={TREE_PAGE_LIMIT}"
@@ -277,14 +275,10 @@ def build_result(
     if slice_name is not None:
         metric_parameters["slice"] = slice_name
 
-    additional_details = {
-        "source_metric_key": spec.key,
-        "source_file": source_path,
-        "source_commit": SOURCE_COMMIT,
-        "source_resolve_url": source_url(source_path),
-        "scoring_model": SCORING_MODEL,
-        "generation_temperature": TEMPERATURE_NOTE,
-    }
+    # Per-result details carry only what varies across results. The file,
+    # commit, resolve URL, scoring model and temperature policy are constant
+    # for the whole log and live once in source_metadata.
+    additional_details = {"source_metric_key": spec.key}
     if spec.diagnostic:
         # lower_is_better is a required boolean with no "neither" member, so
         # say plainly that this metric is not an optimization target.
@@ -304,15 +298,6 @@ def build_result(
         source_data=SourceDataPrivate(
             dataset_name=dataset_name,
             source_type="other",
-            additional_details={
-                "availability": EVAL_DATASET_AVAILABILITY,
-                "dataset_description": EVAL_DATASET_DESCRIPTION,
-                "results_hf_repo": SOURCE_REPO,
-                "results_dataset_url": SOURCE_DATASET_URL,
-                "leaderboard_repository": LEADERBOARD_REPO_URL,
-                "source_file": source_path,
-                "source_commit": SOURCE_COMMIT,
-            },
         ),
         evaluation_timestamp=source_timestamp(source_path),
         metric_config=MetricConfig(
@@ -477,6 +462,7 @@ def build_log(
                 "source_resolve_url": source_url(source_path),
                 "scoring_model": SCORING_MODEL,
                 "evaluated_corpus": EVAL_DATASET_NAME,
+                "evaluated_corpus_description": EVAL_DATASET_DESCRIPTION,
                 "evaluated_corpus_availability": EVAL_DATASET_AVAILABILITY,
                 "generation_temperature": TEMPERATURE_NOTE,
                 "evaluation_timestamp_source": (

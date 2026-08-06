@@ -60,11 +60,13 @@ def expected_scores(rows: dict) -> dict:
 def emitted_scores(result) -> dict:
     emitted = {}
     for output in result.records:
-        for entry in output.eval_log.evaluation_results:
+        log = output.eval_log
+        source_file = log.source_metadata.additional_details['source_file']
+        for entry in log.evaluation_results:
             config = entry.metric_config
             parameters = config.metric_parameters or {}
             key = (
-                config.additional_details['source_file'],
+                source_file,
                 parameters['slice_kind'],
                 parameters.get('slice'),
                 SOURCE_METRIC_BY_ID[config.metric_id],
@@ -164,13 +166,37 @@ def test_private_corpus_is_distinguished_from_public_result_files(
     source_rows, tmp_path: Path
 ):
     result = convert(source_rows, tmp_path / 'data' / adapter.COLLECTION)
-    entry = result.records[0].eval_log.evaluation_results[0]
+    log = result.records[0].eval_log
+    entry = log.evaluation_results[0]
 
+    # The evaluated corpus is private, so it is never given a public locator.
     assert entry.source_data.source_type == 'other'
-    details = entry.source_data.additional_details
-    assert details['results_hf_repo'] == adapter.SOURCE_REPO
+    assert adapter.EVAL_DATASET_NAME in entry.source_data.dataset_name
+
+    # The public result files are provenance for the log, not the corpus.
+    details = log.source_metadata.additional_details
+    assert details['structured_results_hf_repo'] == adapter.SOURCE_REPO
     assert details['source_commit'] == adapter.SOURCE_COMMIT
-    assert 'not publicly released' in details['availability']
+    assert 'not publicly released' in details['evaluated_corpus_availability']
+
+
+def test_constant_provenance_is_not_repeated_per_result(
+    source_rows, tmp_path: Path
+):
+    """Log-level constants stay at log level.
+
+    Repeating them on all 40 results doubled the size of every record.
+    """
+    result = convert(source_rows, tmp_path / 'data' / adapter.COLLECTION)
+    log = result.records[0].eval_log
+
+    for entry in log.evaluation_results:
+        assert entry.source_data.additional_details is None
+        assert set(entry.metric_config.additional_details) <= {
+            'source_metric_key',
+            'diagnostic_metric',
+            'direction_note',
+        }
 
 
 # ===================================================================
