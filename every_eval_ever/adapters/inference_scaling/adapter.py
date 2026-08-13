@@ -15,24 +15,21 @@ Key features:
 6. Incremental uploads to a Hugging Face PR on the target datastore repository (default: `evaleval/EEE_datastore`).
 """
 
+import argparse
+import hashlib
+import json
 import os
 import sys
-import json
-import uuid
 import time
-import hashlib
-import argparse
-import subprocess
 import traceback
+import uuid
+import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Set
-import zipfile_zstd
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
-from huggingface_hub import HfApi
-import zipfile
 import zstandard as zstd
-
+from huggingface_hub import HfApi
 
 ZIP_ZSTANDARD = 93
 zipfile.ZIP_ZSTANDARD = ZIP_ZSTANDARD
@@ -95,9 +92,7 @@ ilt.Performance.__init__ = patched_init_ilt
 
 # Import every_eval_ever converter and types
 from every_eval_ever.converters.inspect.adapter import InspectAIAdapter
-from every_eval_ever.eval_types import EvaluationLog
 from every_eval_ever.instance_level_types import InstanceLevelEvaluationLog
-
 
 # ── Utility Functions ───────────────────────────────────────────────────────
 
@@ -318,7 +313,7 @@ def upload_batch_to_pr(api: HfApi, repo_id: str, pr_num: int, output_dir: Path) 
             path_in_repo="data",
             repo_type="dataset",
             revision=revision,
-            commit_message=f"Incremental batch upload of converted schemas",
+            commit_message="Incremental batch upload of converted schemas",
         )
         print(f"[HF Hub] Successfully completed upload to PR #{pr_num}!")
         return True
@@ -335,7 +330,8 @@ def process_log_file(
         traj_lookup: Dict[Tuple[str, str, int], Dict[str, Any]],
         sub_lookup: Dict[Tuple[str, str, int], List[Dict[str, Any]]],
         turn_lookup: Dict[Tuple[str, str, int], List[Dict[str, Any]]],
-        output_dir: Path
+        output_dir: Path,
+        pre_existing_uuid: str = None
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
     Download a single log file, convert it, merge trajectory/submission/turn data,
@@ -359,7 +355,7 @@ def process_log_file(
 
     # Step 2: Convert using InspectAIAdapter
     print(f"[{log_relative_path}] Running base Inspect AI adapter...")
-    file_uuid = str(uuid.uuid4())
+    file_uuid = pre_existing_uuid if pre_existing_uuid else str(uuid.uuid4())
     metadata_args = {
         "parent_eval_output_dir": "output_schemas",
         "file_uuid": file_uuid
@@ -678,6 +674,8 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=50, help="Commit/upload to PR every N logs.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Run conversion locally without PR creation or uploading.")
+    parser.add_argument("--reprocess-all", action="store_true",
+                        help="Reprocess all files including already successfully processed ones.")
     args = parser.parse_args()
 
     output_dir = Path("output_schemas")
@@ -720,11 +718,30 @@ def main() -> int:
 
     print(f"[Orchestrator] Found {len(eval_files)} total log files in the bucket.")
 
-    # Filter out files already successfully processed (retry previously failed ones)
-    files_to_process = [
-        f for f in eval_files
-        if f not in checkpoint["processed_files"] or checkpoint["processed_files"][f].get("status") != "success"
-    ]
+    # Helper to extract uuid from checkpoint entry
+    def extract_uuid_from_checkpoint_entry(entry: Dict[str, Any]) -> str:
+        if not entry:
+            return None
+        summary = entry.get("summary") or {}
+        val_path = summary.get("validation_report_path") or ""
+        if val_path:
+            # e.g., "data\\validation_reports\\d126cea7-9a4c-4d8f-9158-a00d93eadb25_validation_report.json"
+            import re
+            # Match 36-char UUID (hex chars separated by hyphens)
+            match = re.search(r'([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})', val_path)
+            if match:
+                return match.group(1)
+        return None
+
+    # Filter out files already successfully processed (unless --reprocess-all is passed)
+    if args.reprocess_all:
+        files_to_process = eval_files
+    else:
+        files_to_process = [
+            f for f in eval_files
+            if f not in checkpoint["processed_files"] or checkpoint["processed_files"][f].get("status") != "success"
+        ]
+
     successful_processed = [f for f in eval_files if
                             f in checkpoint["processed_files"] and checkpoint["processed_files"][f].get(
                                 "status") == "success"]
@@ -752,16 +769,24 @@ def main() -> int:
     start_time = time.time()
 
     for idx, log_file in enumerate(files_to_process):
-        print(f"\n======================================================================")
+        print("\n======================================================================")
         print(f"[{idx + 1}/{len(files_to_process)}] Processing: {log_file}")
-        print(f"======================================================================")
+        print("======================================================================")
+
+        # Retrieve existing UUID if successfully processed previously
+        pre_existing_uuid = None
+        if log_file in checkpoint["processed_files"]:
+            pre_existing_uuid = extract_uuid_from_checkpoint_entry(checkpoint["processed_files"][log_file])
+            if pre_existing_uuid:
+                print(f"[Orchestrator] Reusing existing UUID: {pre_existing_uuid}")
 
         success, msg, summary = process_log_file(
             log_file,
             traj_lookup,
             sub_lookup,
             turn_lookup,
-            output_dir
+            output_dir,
+            pre_existing_uuid=pre_existing_uuid
         )
 
         if success:
@@ -802,12 +827,12 @@ def main() -> int:
         upload_batch_to_pr(api, args.repo_id, pr_num, output_dir)
 
     total_time = time.time() - start_time
-    print(f"\n======================================================================")
-    print(f"Finished conversion run!")
+    print("\n======================================================================")
+    print("Finished conversion run!")
     print(f"  Successful: {success_count}")
     print(f"  Failed:     {failed_count}")
     print(f"  Total Time: {total_time / 60:.2f} minutes")
-    print(f"======================================================================")
+    print("======================================================================")
 
     return 0 if failed_count == 0 else 1
 
