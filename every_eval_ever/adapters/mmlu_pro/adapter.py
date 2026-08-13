@@ -61,7 +61,10 @@ from every_eval_ever.helpers import (
     save_evaluation_logs,
     save_failure_report,
 )
-from every_eval_ever.helpers.io import require_identity
+from every_eval_ever.helpers.io import (
+    datastore_path_components,
+    require_identity,
+)
 
 SOURCE_NAME = 'MMLU-Pro Leaderboard'
 SOURCE_ORGANIZATION = 'TIGER-Lab'
@@ -310,6 +313,9 @@ def make_log(
     )
     model_slug = slugify(model_name)
     model_id = get_model_id(model_slug, developer)
+    _, route_developer, route_model = datastore_path_components(
+        'mmlu-pro', model_id, developer
+    )
     raw_data_source = row.get('Data Source', '').strip()
     data_source = normalize_data_source(raw_data_source)
     size_b = parse_size(row.get('Model Size(B)', ''))
@@ -380,7 +386,7 @@ def make_log(
         ),
         evaluation_results=results,
     )
-    return log, developer, model_slug
+    return log, route_developer, route_model
 
 
 def convert_logs(
