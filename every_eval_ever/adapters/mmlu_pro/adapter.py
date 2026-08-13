@@ -56,6 +56,7 @@ from every_eval_ever.helpers import (
     default_failure_report_path,
     get_developer,
     get_model_id,
+    raw_capture,
     sanitize_filename,
     save_evaluation_logs,
     save_failure_report,
@@ -120,7 +121,7 @@ DEVELOPER_OVERRIDES: dict[str, str] = {
 }
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Convert the MMLU-Pro leaderboard CSV into EEE records.'
     )
@@ -153,7 +154,7 @@ def parse_args() -> argparse.Namespace:
             '--output-dir when any row fails.'
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def fetch_csv(url: str) -> str:
@@ -161,6 +162,11 @@ def fetch_csv(url: str) -> str:
 
     response = requests.get(url, timeout=120)
     response.raise_for_status()
+    raw_capture.record(
+        url=response.url,
+        content=response.content,
+        content_type=response.headers.get('Content-Type'),
+    )
     return response.text
 
 

@@ -48,6 +48,7 @@ from every_eval_ever.helpers import (
     default_failure_report_path,
     fetch_json,
     get_developer,
+    raw_capture,
     require_finite_number,
     sanitize_filename,
     save_evaluation_logs,
@@ -214,7 +215,7 @@ class LogBundle:
     model: str
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Convert LLM Stats API data to Every Eval Ever format.'
     )
@@ -258,7 +259,7 @@ def parse_args() -> argparse.Namespace:
             '--output-dir when any row fails.'
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def stringify(value: Any) -> str:
@@ -449,9 +450,14 @@ def fetch_text(url: str) -> str:
     try:
         response = requests.get(url, timeout=60)
         response.raise_for_status()
-        return response.text
     except requests.exceptions.RequestException as exc:
         raise FetchError(f'Failed to fetch {url}: {exc}') from exc
+    raw_capture.record(
+        url=response.url,
+        content=response.content,
+        content_type=response.headers.get('Content-Type'),
+    )
+    return response.text
 
 
 def llm_stats_model_page_url(model_id: str) -> str:
