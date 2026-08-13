@@ -1,5 +1,7 @@
+import json
 import subprocess
 import unittest
+from pathlib import Path
 from typing import Any, Dict
 
 
@@ -73,6 +75,39 @@ class TestInferenceScalingAdapterUUIDReUse(unittest.TestCase):
             },
         }
         self.assertIsNone(extract_uuid_from_checkpoint_entry(entry_invalid))
+
+    def test_load_checkpoint_normalizes_keys(self):
+        import tempfile
+
+        from every_eval_ever.adapters.inference_scaling.adapter import (
+            load_checkpoint,
+        )
+
+        # Create a mock checkpoint with Windows-style path keys
+        mock_data = {
+            'processed_files': {
+                'logs\\terminalbench\\some_file.eval': {
+                    'status': 'success',
+                    'summary': {
+                        'validation_report_path': 'data\\validation_reports\\12345678-1234-1234-1234-123456789012_validation_report.json'
+                    },
+                }
+            },
+            'stats': {'success': 1, 'failed': 0},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = Path(tmpdir) / 'checkpoint.json'
+            with open(ckpt_path, 'w', encoding='utf-8') as f:
+                json.dump(mock_data, f)
+
+            loaded = load_checkpoint(ckpt_path)
+            self.assertIn(
+                'logs/terminalbench/some_file.eval', loaded['processed_files']
+            )
+            self.assertNotIn(
+                'logs\\terminalbench\\some_file.eval', loaded['processed_files']
+            )
 
     def test_cli_help(self):
         # Verify the --help command works and contains --force

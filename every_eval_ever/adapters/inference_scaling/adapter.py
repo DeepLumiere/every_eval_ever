@@ -111,7 +111,13 @@ def load_checkpoint(checkpoint_path: Path) -> Dict[str, Any]:
     if checkpoint_path.exists():
         try:
             with open(checkpoint_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+                if 'processed_files' in data:
+                    data['processed_files'] = {
+                        k.replace('\\', '/'): v
+                        for k, v in data['processed_files'].items()
+                    }
+                return data
         except Exception as e:
             print(f'Warning: Failed to parse checkpoint: {e}')
     return {'processed_files': {}, 'stats': {'success': 0, 'failed': 0}}
@@ -371,6 +377,18 @@ def process_log_file(
     tmp_eval_file = Path('temp_download.eval')
     if tmp_eval_file.exists():
         tmp_eval_file.unlink()
+
+    # Pre-clean any existing files in output_dir containing the pre_existing_uuid to avoid rglob conflicts
+    if pre_existing_uuid and output_dir.exists():
+        print(
+            f'[{log_relative_path}] Cleaning up existing files for UUID {pre_existing_uuid}...'
+        )
+        for p in output_dir.rglob(f'*{pre_existing_uuid}*'):
+            try:
+                if p.is_file():
+                    p.unlink()
+            except OSError as oe:
+                print(f'Warning: Failed to delete existing file {p}: {oe}')
 
     # Step 1: Download raw .eval file
     print(f'\n[{log_relative_path}] Downloading log file...')
