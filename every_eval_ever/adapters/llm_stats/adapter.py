@@ -66,6 +66,8 @@ DEFAULT_OUTPUT_DIR = 'data/llm-stats'
 AA_OMNISCIENCE_BENCHMARK_ID = 'aa-omniscience-index'
 AA_OMNISCIENCE_MIN_SCORE = -100.0
 AA_OMNISCIENCE_MAX_SCORE = 100.0
+VENDING_BENCH_2_BENCHMARK_ID = 'vending-bench-2'
+VENDING_BENCH_2_SCALE_URL = 'https://andonlabs.com/evals/vending-bench-2'
 COMMUNITY_LEADERBOARD_EXCLUSION_REASON = (
     'community dataset leaderboard requires the separate '
     '/v1/dataset-leaderboards API and is not supported by this adapter yet'
@@ -1528,6 +1530,25 @@ def metric_bounds_and_unit(
             'aa_omniscience_signed_scale',
         )
 
+    if normalize_slug(benchmark_source_id(benchmark)) == (
+        VENDING_BENCH_2_BENCHMARK_ID
+    ):
+        if score_value < 0:
+            raise ValueError(
+                'Vending-Bench 2 final bank balance must be non-negative; '
+                f'got {score_value}'
+            )
+        # The benchmark owner defines the score as the final bank balance in
+        # dollars and explicitly documents that the benchmark has no ceiling.
+        # LLM Stats currently advertises max_score=1 for this benchmark, which
+        # is incompatible with its own dollar-valued source rows.
+        return (
+            0.0,
+            float('inf'),
+            'usd',
+            'vending_bench_2_unbounded_dollars',
+        )
+
     if min_score is not None and max_score is not None:
         if score_value > max_score and max_score == 1.0 and score_value <= 100:
             return 0.0, 100.0, 'percent', 'inferred_percent_from_score'
@@ -1648,10 +1669,26 @@ def make_metric_details(
         'raw_score_field': raw_score_field,
         'bound_strategy': bound_strategy,
     }
+    raw_min_score = first_present(
+        benchmark,
+        ('min_score', 'minScore', 'minimum_score', 'minimumScore', 'min'),
+    )
+    raw_max_score = first_present(
+        benchmark,
+        ('max_score', 'maxScore', 'maximum_score', 'maximumScore', 'max'),
+    )
+    if raw_min_score not in (None, ''):
+        details['raw_min_score'] = raw_min_score
+    if raw_max_score not in (None, ''):
+        details['raw_max_score'] = raw_max_score
     for key in BENCHMARK_DETAIL_KEYS:
         value = first_present(benchmark, (key,))
         if value not in (None, ''):
             details[f'raw_{normalize_slug(key).replace("-", "_")}'] = value
+    if normalize_slug(benchmark_source_id(benchmark)) == (
+        VENDING_BENCH_2_BENCHMARK_ID
+    ):
+        details['canonical_scale_source_url'] = VENDING_BENCH_2_SCALE_URL
     return stringify_details(details)
 
 

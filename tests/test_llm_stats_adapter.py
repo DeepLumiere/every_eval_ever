@@ -335,6 +335,82 @@ def test_generic_bounds_use_documented_max_and_reject_unbounded_negative():
         adapter.metric_bounds_and_unit(-1.0, None, {'id': 'example'})
 
 
+def vending_bench_2_payload() -> dict:
+    benchmark = {
+        'benchmark_id': 'vending-bench-2',
+        'name': 'Vending-Bench 2',
+        'description': 'Final bank balance after one simulated year.',
+        'max_score': 1.0,
+    }
+    rows = [
+        ('claude-opus-4-6', 'Claude Opus 4.6', 'anthropic', 8017.59),
+        ('glm-5.1', 'GLM-5.1', 'zhipu-ai', 5634.41),
+        ('gemini-3-pro-preview', 'Gemini 3 Pro', 'google', 5478.16),
+        ('gemini-3-flash-preview', 'Gemini 3 Flash', 'google', 3635.0),
+    ]
+    return {
+        'models': [],
+        'benchmarks': [],
+        'scores': [
+            {
+                'id': f'vending-bench-2::{model_id}',
+                'model_id': model_id,
+                'model_name': model_name,
+                'organization_id': organization,
+                'organization_name': organization,
+                'score': score,
+                'normalized_score': None,
+                'self_reported': True,
+                'source_url': adapter.VENDING_BENCH_2_SCALE_URL,
+                'benchmark': benchmark,
+            }
+            for model_id, model_name, organization, score in rows
+        ],
+        'source_record_count': len(rows),
+    }
+
+
+def test_vending_bench_2_uses_unbounded_dollar_scale_and_validates(
+    tmp_path: Path,
+):
+    result = adapter.convert_logs(
+        vending_bench_2_payload(), retrieved_timestamp='1234567890.0'
+    )
+
+    assert result.failures == []
+    scores = sorted(
+        evaluation_result.score_details.score
+        for bundle in result.records
+        for evaluation_result in bundle.log.evaluation_results
+    )
+    assert scores == [3635.0, 5478.16, 5634.41, 8017.59]
+    for bundle in result.records:
+        evaluation_result = bundle.log.evaluation_results[0]
+        metric = evaluation_result.metric_config
+        assert metric.min_score == 0
+        assert metric.max_score == float('inf')
+        assert metric.metric_unit == 'usd'
+        assert metric.additional_details['bound_strategy'] == (
+            'vending_bench_2_unbounded_dollars'
+        )
+        assert metric.additional_details['raw_max_score'] == '1.0'
+        assert metric.additional_details['canonical_scale_source_url'] == (
+            adapter.VENDING_BENCH_2_SCALE_URL
+        )
+
+    output_dir = tmp_path / 'data' / 'llm-stats'
+    paths = adapter.export_logs(result.records, output_dir)
+    assert len(paths) == 4
+    for path in paths:
+        report = validate_file(
+            path,
+            repo_path=str(path.relative_to(tmp_path)),
+            available_files=frozenset(),
+            run_semantic_checks=True,
+        )
+        assert report.valid, report.errors
+
+
 def test_community_benchmarks_are_excluded_without_fetching_details(
     monkeypatch, tmp_path: Path
 ):

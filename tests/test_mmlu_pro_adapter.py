@@ -225,11 +225,33 @@ def test_data_source_typos_are_normalized():
 
 
 def test_exact_duplicate_rows_are_dropped():
-    bundles = adapter.make_logs(sample_rows(), retrieved_timestamp='123.0')
+    result = adapter.convert_logs(sample_rows(), retrieved_timestamp='123.0')
+    bundles = result.records
     duplicated = [
         b for b in bundles if 'gpt-4-turbo' in b[0].model_info.id.lower()
     ]
     assert len(duplicated) == 1
+    assert len(result.exclusions) == 1
+    assert result.exclusions[0].source_ref == 'CSV row 6'
+    assert result.exclusions[0].reason == 'exact duplicate leaderboard row'
+
+
+def test_current_live_model_families_have_stable_developers():
+    expected = {
+        'Gemini-3-Flash(12/25)': 'google',
+        'Llemma-7B': 'eleutherai',
+        'OpenChat-3.5-8B': 'openchat',
+        'Staring-7B': 'berkeley-nest',
+        'RRD2.5-9B': 'rrd',
+        'ECHO_Ego_v2_14B': 'mythworx',
+        'Seed2.0-Pro': 'bytedance',
+        'K2.5-1T-A32B': 'moonshotai',
+        'Nemotron-3-Nano-30B-A3B(BF16)': 'nvidia',
+    }
+
+    assert {
+        model: adapter.normalize_developer(model) for model in expected
+    } == expected
 
 
 def test_export_preflights_all_paths_before_writing(tmp_path):

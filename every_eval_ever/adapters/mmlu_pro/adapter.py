@@ -52,6 +52,7 @@ from every_eval_ever.helpers import (
     SCHEMA_VERSION,
     EvaluationLogOutput,
     SourceConversionResult,
+    SourceRecordExclusion,
     SourceRecordFailure,
     default_failure_report_path,
     get_developer,
@@ -109,6 +110,40 @@ DATA_SOURCE_NORMALIZATIONS: dict[str, str] = {
 # A few MMLU-Pro models aren't covered by the helpers/developer.py
 # pattern map. Provide explicit overrides for those.
 DEVELOPER_OVERRIDES: dict[str, str] = {
+    'llemma': 'eleutherai',
+    # Some Gemini rows include a parenthesized MM/YY date. Match the family
+    # before get_developer mistakes that slash for an organization namespace.
+    'gemini': 'google',
+    'openchat': 'openchat',
+    'zephyr': 'huggingface',
+    'neo': 'm-a-p',
+    # The upstream CSV and paper spell Starling-7B as "Staring-7B".
+    'staring': 'berkeley-nest',
+    'internmath': 'shanghai-ai-lab',
+    'mathstral': 'mistralai',
+    'magnum': 'anthracite',
+    # The leaderboard does not publish an organization for this self-reported
+    # model. Keep a stable family namespace instead of silently losing it.
+    'rrd2.5': 'rrd',
+    'ministral': 'mistralai',
+    'smollm': 'huggingface',
+    'qwq': 'alibaba',
+    'skythought': 'novasky',
+    'minimax': 'minimax-ai',
+    'hunyuan': 'tencent',
+    'doubao': 'bytedance',
+    'azerogpt': 'soundai',
+    'llada': 'gsai',
+    'reka': 'reka-ai',
+    'nemotron': 'nvidia',
+    'mimo': 'xiaomi',
+    'general-reasoner': 'tiger-lab',
+    'echo_ego': 'mythworx',
+    'ernie': 'baidu',
+    'seed': 'bytedance',
+    'intern-s1': 'internlm',
+    'longcat': 'meituan',
+    'k2.5': 'moonshotai',
     'exaone': 'lg-ai',
     'mammoth': 'tiger-lab',
     'smaug': 'abacus-ai',
@@ -404,6 +439,7 @@ def convert_logs(
     # survive and exact dupes are dropped.
     seen: set[tuple[str, str, str]] = set()
     failures: list[SourceRecordFailure] = []
+    exclusions: list[SourceRecordExclusion] = []
     for index, row in enumerate(rows):
         try:
             result = make_log(row, timestamp)
@@ -443,6 +479,13 @@ def convert_logs(
         )
         key = (log.model_info.id, data_source, overall)
         if key in seen:
+            exclusions.append(
+                SourceRecordExclusion(
+                    source_ref=f'CSV row {index + 2}',
+                    reason='exact duplicate leaderboard row',
+                    source_record=row,
+                )
+            )
             continue
         seen.add(key)
         bundles.append((log, developer, slug))
@@ -453,6 +496,7 @@ def convert_logs(
         total_records=len(rows),
         records=bundles,
         failures=failures,
+        exclusions=exclusions,
     )
 
 
@@ -492,12 +536,13 @@ def run(args: argparse.Namespace) -> int:
     paths = export(result.records, args.output_dir)
     for path in paths:
         print(path)
-    if result.failures:
+    if result.failures or result.exclusions:
         report_path = save_failure_report(
             result,
             args.failure_report or default_failure_report_path(args.output_dir),
         )
         print(f'Failure report: {report_path}')
+    if result.failures:
         result.raise_if_incomplete()
     return len(paths)
 
