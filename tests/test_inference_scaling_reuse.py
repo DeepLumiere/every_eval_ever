@@ -110,7 +110,7 @@ class TestInferenceScalingAdapterUUIDReUse(unittest.TestCase):
             )
 
     def test_cli_help(self):
-        # Verify the --help command works and contains --force
+        # Verify the --help command works and contains --force and --restore-checkpoint
         res = subprocess.run(
             [
                 'uv',
@@ -125,6 +125,7 @@ class TestInferenceScalingAdapterUUIDReUse(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 0)
         self.assertIn('--force', res.stdout)
+        self.assertIn('--restore-checkpoint', res.stdout)
 
 
 if __name__ == '__main__':

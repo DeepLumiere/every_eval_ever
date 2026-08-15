@@ -130,6 +130,113 @@ def save_checkpoint(checkpoint_path: Path, checkpoint: Dict[str, Any]) -> None:
         json.dump(checkpoint, f, indent=2, sort_keys=True)
 
 
+def reconstruct_checkpoint_from_hf(
+    repo_id: str = 'evaleval/EEE_datastore',
+    target_folders: List[str] = None,
+    checkpoint_path: Path = Path('data/conversion_checkpoint.json'),
+    max_workers: int = 60,
+) -> Dict[str, Any]:
+    """
+    Scans Hugging Face dataset repo for sample files, extracts (log_file, file_uuid) mappings,
+    and reconstructs or updates conversion_checkpoint.json.
+    """
+    import re
+    import urllib.request
+    from concurrent.futures import ThreadPoolExecutor
+
+    if target_folders is None:
+        target_folders = [
+            'frontiermath',
+            'healthbench',
+            'hle',
+            'swebenchpro',
+            'terminalbench',
+        ]
+
+    print(
+        f"[Checkpoint Reconstructor] Connecting to HF dataset repo '{repo_id}'..."
+    )
+    api = HfApi()
+    try:
+        files = api.list_repo_files(repo_id, repo_type='dataset')
+    except Exception as e:
+        print(f'Error fetching repo files from {repo_id}: {e}')
+        return load_checkpoint(checkpoint_path)
+
+    sample_files = [
+        f
+        for f in files
+        if f.startswith('data/')
+        and (
+            not target_folders
+            or any(f'data/{folder}/' in f for folder in target_folders)
+        )
+        and f.endswith('_samples.jsonl')
+    ]
+
+    print(
+        f'[Checkpoint Reconstructor] Found {len(sample_files)} sample files to scan across target folders.'
+    )
+
+    checkpoint = load_checkpoint(checkpoint_path)
+    processed_files = checkpoint.setdefault('processed_files', {})
+
+    def fetch_single_mapping(path: str) -> Tuple[str, Dict[str, Any]] | None:
+        file_name = path.split('/')[-1]
+        file_uuid = file_name.replace('_samples.jsonl', '')
+        url = f'https://huggingface.co/datasets/{repo_id}/resolve/main/{path}'
+        try:
+            req = urllib.request.Request(
+                url, headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                line = resp.readline().decode('utf-8')
+                matches = re.findall(r'logs/[^\s\"\'\\\\]+\.eval', line)
+                if matches:
+                    log_file = matches[0]
+                    dataset_name = path.split('/')[1]
+                    try:
+                        sample_json = json.loads(line)
+                        model_id = sample_json.get('model_id', '')
+                    except Exception:
+                        model_id = ''
+                    entry = {
+                        'status': 'success',
+                        'summary': {
+                            'dataset_name': dataset_name,
+                            'model_id': model_id,
+                            'validation_report_path': f'data\\validation_reports\\{file_uuid}_validation_report.json',
+                        },
+                        'timestamp': time.time(),
+                    }
+                    return log_file, entry
+        except Exception:
+            return None
+
+    recovered_count = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = executor.map(fetch_single_mapping, sample_files)
+        for res in results:
+            if res:
+                log_file, entry = res
+                processed_files[log_file] = entry
+                recovered_count += 1
+
+    success_count = sum(
+        1 for v in processed_files.values() if v.get('status') == 'success'
+    )
+    failed_count = sum(
+        1 for v in processed_files.values() if v.get('status') == 'failed'
+    )
+    checkpoint['stats'] = {'success': success_count, 'failed': failed_count}
+
+    save_checkpoint(checkpoint_path, checkpoint)
+    print(
+        f'[Checkpoint Reconstructor] Successfully reconstructed/updated checkpoint with {recovered_count} mappings at {checkpoint_path}!'
+    )
+    return checkpoint
+
+
 def download_file_programmatically(
     url: str, output_path: Path, token: str = None
 ) -> None:
@@ -827,12 +934,25 @@ def main() -> int:
         action='store_true',
         help='Reprocess all files including already successfully processed ones and overwrite existing outputs.',
     )
+    parser.add_argument(
+        '--restore-checkpoint',
+        action='store_true',
+        help='Reconstruct conversion_checkpoint.json by fetching existing file UUID mappings from Hugging Face dataset repository.',
+    )
     args = parser.parse_args()
 
     output_dir = Path('output_schemas')
     output_dir.mkdir(exist_ok=True)
 
     checkpoint_path = Path('data/conversion_checkpoint.json')
+
+    if args.restore_checkpoint:
+        print('[Orchestrator] Running checkpoint restoration mode...')
+        reconstruct_checkpoint_from_hf(
+            repo_id='evaleval/EEE_datastore',
+            checkpoint_path=checkpoint_path,
+        )
+
     checkpoint = load_checkpoint(checkpoint_path)
 
     # Prepare Hugging Face Client
